@@ -167,10 +167,7 @@ export default function LandingPage() {
               <a href="https://llmstxt.org/" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">
                 Specification
               </a>
-              <a href="#" className="hover:text-white transition-colors">
-                Documentation
-              </a>
-              <a href="#" className="hover:text-white transition-colors">
+              <a href="https://github.com/brianguo71/llms.txt-generator" className="hover:text-white transition-colors">
                 GitHub
               </a>
             </div>
