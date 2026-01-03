@@ -137,7 +137,9 @@ Once running, visit `/docs` for interactive API documentation.
 | `LLM_MODEL` | Model name | `gpt-4o-mini` |
 | `MAX_PAGES_PER_CRAWL` | Maximum pages to crawl per site | `100` |
 | `MAX_CRAWL_DEPTH` | Maximum link depth to follow | `3` |
+| `CHANGEDETECTION_URL` | URL of changedetection.io instance | `http://changedetection:5000` |
 | `CHANGEDETECTION_API_KEY` | API key for changedetection.io | - |
+| `WEBHOOK_BASE_URL` | Public URL for webhooks (Railway backend URL) | `http://api:8000` |
 | `DATABASE_URL` | PostgreSQL connection string | - |
 | `REDIS_URL` | Redis connection string | - |
 
@@ -193,6 +195,139 @@ llmstxt/
 2. Set root directory to `frontend`
 3. Add environment variable:
    - `VITE_API_URL` = your Railway backend URL
+
+### Change Detection (Hetzner VPS)
+
+For production, run changedetection.io on a separate VPS for persistent storage and resource isolation.
+
+**Recommended: Hetzner CX22** (~€4.35/mo) - 2 vCPU, 4GB RAM, 40GB SSD
+
+#### 1. Create the VPS
+
+1. Sign up at [Hetzner Cloud](https://www.hetzner.com/cloud)
+2. Create a new project
+3. Add a server:
+   - Location: Any (Ashburn for US East)
+   - Image: Ubuntu 24.04
+   - Type: CX22 (2 vCPU, 4GB RAM)
+   - SSH key: Add your public key
+4. Note the server's public IP address
+
+#### 2. Initial Server Setup
+
+SSH into your server:
+
+```bash
+ssh root@YOUR_SERVER_IP
+
+# Update system
+apt update && apt upgrade -y
+
+# Install Docker
+curl -fsSL https://get.docker.com | sh
+
+# Install Docker Compose
+apt install docker-compose-plugin -y
+
+# Create directory for changedetection
+mkdir -p /opt/changedetection
+cd /opt/changedetection
+```
+
+#### 3. Create Docker Compose File
+
+Create `/opt/changedetection/docker-compose.yml`:
+
+```yaml
+services:
+  changedetection:
+    image: ghcr.io/dgtlmoon/changedetection.io
+    restart: unless-stopped
+    volumes:
+      - ./data:/datastore
+    ports:
+      - "5000:5000"
+    environment:
+      - PLAYWRIGHT_DRIVER_URL=ws://playwright:3000
+      - BASE_URL=http://YOUR_SERVER_IP:5000
+    depends_on:
+      - playwright
+
+  playwright:
+    image: browserless/chrome:latest
+    restart: unless-stopped
+    environment:
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1080
+      - SCREEN_DEPTH=16
+      - ENABLE_DEBUGGER=false
+      - PREBOOT_CHROME=true
+      - CONNECTION_TIMEOUT=300000
+      - MAX_CONCURRENT_SESSIONS=10
+```
+
+Replace `YOUR_SERVER_IP` with your actual server IP.
+
+#### 4. Start the Services
+
+```bash
+cd /opt/changedetection
+docker compose up -d
+```
+
+#### 5. Configure Firewall
+
+```bash
+# Allow SSH and changedetection port
+ufw allow 22
+ufw allow 5000
+ufw enable
+```
+
+#### 6. Get API Key
+
+1. Open `http://YOUR_SERVER_IP:5000` in your browser
+2. Go to Settings → API
+3. Copy the API key
+
+#### 7. Configure Your Backend
+
+Update your Railway backend environment variables:
+
+```
+CHANGEDETECTION_URL=http://YOUR_SERVER_IP:5000
+CHANGEDETECTION_API_KEY=your-api-key-from-step-6
+WEBHOOK_BASE_URL=https://your-railway-backend.up.railway.app
+```
+
+#### Optional: Add HTTPS with Caddy
+
+For production, add HTTPS using Caddy as a reverse proxy:
+
+```bash
+# Install Caddy
+apt install -y debian-keyring debian-archive-keyring apt-transport-https
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+apt update && apt install caddy -y
+
+# Configure Caddy (replace with your domain)
+cat > /etc/caddy/Caddyfile << 'EOF'
+changedetection.yourdomain.com {
+    reverse_proxy localhost:5000
+}
+EOF
+
+# Restart Caddy
+systemctl restart caddy
+```
+
+Then update your Docker Compose to only bind to localhost:
+
+```yaml
+ports:
+  - "127.0.0.1:5000:5000"
+```
 
 ## Contributing
 
