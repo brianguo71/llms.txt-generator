@@ -279,16 +279,14 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
 
         # Progress callback for crawler
         crawl_start = time.time()
-        def on_crawl_progress(crawled: int, queued: int, url: str):
+        def on_crawl_progress(crawled: int, total: int, url: str):
             elapsed = time.time() - crawl_start
-            estimated_total = min(crawled + queued, settings.max_pages_per_crawl)
             log_progress(
                 stage="CRAWL",
                 current=crawled,
-                total=estimated_total,
+                total=total,
                 elapsed=elapsed,
                 current_url=url,
-                extra=f"Queue: {queued}",
             )
 
         # Perform crawl
@@ -331,14 +329,16 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
         new_version = max_version + 1
 
         for page_data in pages_data:
+            # Store markdown content in first_paragraph field for backwards compatibility
+            markdown = page_data.get("markdown", "")
+            first_para = markdown[:2000] if markdown else page_data.get("first_paragraph")
+            
             page = Page(
                 project_id=project.id,
                 url=page_data.get("url", ""),
                 title=page_data.get("title", ""),
                 description=page_data.get("description"),
-                h1=page_data.get("h1"),
-                h2s=page_data.get("h2s"),
-                first_paragraph=page_data.get("first_paragraph"),
+                first_paragraph=first_para,
                 content_hash=page_data.get("content_hash"),
                 depth=page_data.get("depth", 0),
                 version=new_version,
