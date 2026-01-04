@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timezone
 
 from celery import shared_task
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import create_engine, delete, func
 from sqlalchemy.orm import sessionmaker
 
@@ -218,7 +219,7 @@ def _assemble_and_save_llms_txt(
     return content
 
 
-@celery_app.task(bind=True, max_retries=3)
+@celery_app.task(bind=True, max_retries=3, soft_time_limit=600, time_limit=660)
 def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
     """Perform initial crawl of a website.
 
@@ -391,6 +392,21 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
             "sections": len(curation_result.sections),
         }
 
+    except SoftTimeLimitExceeded:
+        session.rollback()
+        logger.error(f"Crawl timed out for project {project_id} (10 minute limit)")
+        
+        # Mark job as failed with timeout message
+        crawl_job = session.query(CrawlJob).filter(CrawlJob.id == crawl_job_id).first()
+        project = session.query(Project).filter(Project.id == project_id).first()
+        if crawl_job:
+            crawl_job.fail("Crawl timed out after 10 minutes - site may be protected or too large")
+        if project:
+            project.status = "failed"
+        session.commit()
+        
+        return {"error": "Crawl timed out", "status": "failed"}
+
     except Exception as e:
         session.rollback()
         crawl_job = session.query(CrawlJob).filter(CrawlJob.id == crawl_job_id).first()
@@ -404,7 +420,7 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
         session.close()
 
 
-@celery_app.task(bind=True)
+@celery_app.task(bind=True, soft_time_limit=600, time_limit=660)
 def targeted_recrawl(self, project_id: str, changed_urls: list[str]) -> dict:
     """Re-crawl only changed pages with selective regeneration.
 
