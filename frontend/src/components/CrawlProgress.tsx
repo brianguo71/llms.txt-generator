@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Loader2, CheckCircle, AlertCircle, Clock, Globe, FileText, Sparkles } from 'lucide-react'
+import { Loader2, CheckCircle, AlertCircle, Clock, Globe, Filter, Sparkles, FileText, Check } from 'lucide-react'
 import { CrawlJob, CrawlProgress as CrawlProgressType, api } from '../lib/api'
 
 interface CrawlProgressProps {
@@ -8,14 +8,23 @@ interface CrawlProgressProps {
   projectStatus: string
 }
 
+const STEPS = [
+  { key: 'CRAWL', label: 'Crawl', icon: Globe },
+  { key: 'FILTER', label: 'Filter', icon: Filter },
+  { key: 'CURATE', label: 'Curate', icon: Sparkles },
+  { key: 'GENERATE', label: 'Generate', icon: FileText },
+]
+
 export default function CrawlProgress({ jobs, projectId, projectStatus }: CrawlProgressProps) {
   const [progress, setProgress] = useState<CrawlProgressType | null>(null)
+  const [elapsedTime, setElapsedTime] = useState(0)
   const latestJob = jobs[0]
 
   // Poll for progress when crawling
   useEffect(() => {
     if (projectStatus !== 'crawling' && projectStatus !== 'pending') {
       setProgress(null)
+      setElapsedTime(0)
       return
     }
 
@@ -36,41 +45,36 @@ export default function CrawlProgress({ jobs, projectId, projectStatus }: CrawlP
     return () => clearInterval(interval)
   }, [projectId, projectStatus])
 
-  const getStageIcon = (stage: string) => {
-    switch (stage) {
-      case 'CRAWL':
-        return <Globe className="w-4 h-4" />
-      case 'SUMMARIZE':
-        return <Sparkles className="w-4 h-4" />
-      case 'GENERATE':
-        return <FileText className="w-4 h-4" />
-      case 'COMPLETE':
-        return <CheckCircle className="w-4 h-4" />
-      default:
-        return <Loader2 className="w-4 h-4 animate-spin" />
+  // Track elapsed time client-side based on job start time
+  useEffect(() => {
+    if (projectStatus !== 'crawling' && projectStatus !== 'pending') {
+      return
     }
-  }
 
-  const getStageName = (stage: string) => {
-    switch (stage) {
-      case 'CRAWL':
-        return 'Crawling pages'
-      case 'SUMMARIZE':
-        return 'Summarizing content'
-      case 'GENERATE':
-        return 'Generating llms.txt'
-      case 'COMPLETE':
-        return 'Complete'
-      default:
-        return 'Processing'
+    if (!latestJob?.started_at) {
+      return
     }
-  }
 
-  const formatTime = (seconds: number | undefined) => {
-    if (seconds === undefined || seconds === null) return '--'
-    if (seconds < 60) return `${Math.round(seconds)}s`
+    const startTime = new Date(latestJob.started_at).getTime()
+    
+    const updateElapsed = () => {
+      const now = Date.now()
+      const elapsed = Math.floor((now - startTime) / 1000)
+      setElapsedTime(elapsed)
+    }
+
+    // Update immediately
+    updateElapsed()
+
+    // Update every second
+    const interval = setInterval(updateElapsed, 1000)
+    return () => clearInterval(interval)
+  }, [latestJob?.started_at, projectStatus])
+
+  const formatTime = (seconds: number) => {
+    if (seconds < 60) return `${seconds}s`
     const minutes = Math.floor(seconds / 60)
-    const remainingSeconds = Math.round(seconds % 60)
+    const remainingSeconds = seconds % 60
     return `${minutes}m ${remainingSeconds}s`
   }
 
@@ -86,69 +90,140 @@ export default function CrawlProgress({ jobs, projectId, projectStatus }: CrawlP
     return `${minutes}m ${remainingSeconds}s`
   }
 
-  // If there's active progress, show the detailed view
-  if (progress && (projectStatus === 'crawling' || projectStatus === 'pending')) {
-    const stageColors: Record<string, string> = {
-      CRAWL: 'bg-blue-500',
-      SUMMARIZE: 'bg-purple-500',
-      GENERATE: 'bg-cyan-500',
-      COMPLETE: 'bg-green-500',
+  const getCurrentStepIndex = () => {
+    if (!progress) return 0
+    const idx = STEPS.findIndex(s => s.key === progress.stage)
+    return idx >= 0 ? idx : 0
+  }
+
+  const getStepStatus = (stepIndex: number) => {
+    const currentIdx = getCurrentStepIndex()
+    if (progress?.stage === 'COMPLETE') return 'complete'
+    if (stepIndex < currentIdx) return 'complete'
+    if (stepIndex === currentIdx) return 'active'
+    return 'pending'
+  }
+
+  const getExtraInfo = () => {
+    if (!progress?.extra) return null
+    // Parse the extra field for useful info
+    if (progress.extra.includes('Kept')) {
+      return progress.extra // e.g. "Kept 29/100 pages"
     }
+    if (progress.extra.includes('Curated')) {
+      return progress.extra // e.g. "Curated 9 pages in 4 sections"
+    }
+    return null
+  }
+
+  // If there's active progress, show the step-based view
+  if (progress && (projectStatus === 'crawling' || projectStatus === 'pending')) {
+    const currentStepIndex = getCurrentStepIndex()
+    const currentStep = STEPS[currentStepIndex]
+    const isComplete = progress.stage === 'COMPLETE'
 
     return (
-      <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-6">
-        <h3 className="text-sm font-medium text-[var(--color-text-muted)] mb-4">
-          Crawl Progress
+      <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-6 overflow-hidden">
+        <h3 className="text-sm font-medium text-[var(--color-text-muted)] mb-6">
+          {isComplete ? 'Crawl Complete' : 'Generating llms.txt...'}
         </h3>
         
-        {/* Stage indicator */}
-        <div className="flex items-center gap-2 mb-4">
-          <div className={`p-1.5 rounded-lg ${stageColors[progress.stage] || 'bg-cyan-500'} text-white`}>
-            {getStageIcon(progress.stage)}
-          </div>
-          <div>
-            <p className="font-medium">{getStageName(progress.stage)}</p>
-            <p className="text-xs text-[var(--color-text-muted)]">
-              {progress.current} of {progress.total} {progress.stage === 'CRAWL' ? 'pages' : 'items'}
-            </p>
-          </div>
+        {/* Step indicators - grid layout for even spacing */}
+        <div className="grid grid-cols-4 gap-2 mb-6">
+          {STEPS.map((step, idx) => {
+            const status = getStepStatus(idx)
+            const StepIcon = step.icon
+            
+            return (
+              <div key={step.key} className="flex flex-col items-center relative">
+                {/* Connector line (before circle, except first) */}
+                {idx > 0 && (
+                  <div 
+                    className={`
+                      absolute top-5 right-1/2 w-full h-0.5 -z-10
+                      ${idx <= currentStepIndex || isComplete
+                        ? 'bg-green-500' 
+                        : 'bg-[var(--color-border)]'
+                      }
+                    `}
+                  />
+                )}
+                
+                {/* Step circle */}
+                <div 
+                  className={`
+                    w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300 z-10
+                    ${status === 'complete' 
+                      ? 'bg-green-500/20 text-green-400 border-2 border-green-500' 
+                      : status === 'active'
+                        ? 'bg-cyan-500/20 text-cyan-400 border-2 border-cyan-500'
+                        : 'bg-[var(--color-surface)] text-[var(--color-text-muted)] border-2 border-[var(--color-border)]'
+                    }
+                  `}
+                >
+                  {status === 'complete' ? (
+                    <Check className="w-5 h-5" />
+                  ) : status === 'active' ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <StepIcon className="w-5 h-5" />
+                  )}
+                </div>
+                
+                {/* Label */}
+                <span 
+                  className={`
+                    mt-2 text-xs font-medium transition-colors text-center
+                    ${status === 'active' 
+                      ? 'text-cyan-400' 
+                      : status === 'complete'
+                        ? 'text-green-400'
+                        : 'text-[var(--color-text-muted)]'
+                    }
+                  `}
+                >
+                  {step.label}
+                </span>
+              </div>
+            )
+          })}
         </div>
 
-        {/* Progress bar */}
-        <div className="mb-4">
-          <div className="flex justify-between text-xs text-[var(--color-text-muted)] mb-1">
-            <span>{progress.percent.toFixed(1)}%</span>
-            <span>ETA: {formatTime(progress.eta_seconds)}</span>
-          </div>
-          <div className="h-2 bg-[var(--color-border)] rounded-full overflow-hidden">
-            <div 
-              className={`h-full ${stageColors[progress.stage] || 'bg-cyan-500'} rounded-full transition-all duration-300`}
-              style={{ width: `${Math.min(progress.percent, 100)}%` }} 
-            />
-          </div>
-        </div>
-
-        {/* Current URL */}
-        {progress.current_url && (
-          <div className="text-xs text-[var(--color-text-muted)]">
-            <span className="opacity-60">Processing: </span>
-            <span className="font-mono">{progress.current_url}</span>
+        {/* Current step info */}
+        {!isComplete && (
+          <div className="bg-[var(--color-bg)] rounded-lg p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium">
+                {currentStep?.label || 'Processing'}...
+              </span>
+              <span className="text-xs text-[var(--color-text-muted)]">
+                {formatTime(elapsedTime)} elapsed
+              </span>
+            </div>
+            
+            {/* Extra info if available */}
+            {getExtraInfo() && (
+              <p className="text-xs text-[var(--color-text-muted)]">
+                {getExtraInfo()}
+              </p>
+            )}
+            
+            {/* Subtle pulsing bar for activity */}
+            <div className="mt-3 h-1 bg-[var(--color-border)] rounded-full overflow-hidden">
+              <div className="h-full w-1/3 bg-cyan-500/50 rounded-full animate-pulse" />
+            </div>
           </div>
         )}
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-[var(--color-border)]">
-          <div className="text-center">
-            <p className="text-lg font-bold text-cyan-400">{progress.current}</p>
-            <p className="text-xs text-[var(--color-text-muted)]">
-              {progress.stage === 'CRAWL' ? 'Crawled' : 'Summarized'}
+        {/* Completion stats */}
+        {isComplete && progress.extra && (
+          <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-4 text-center">
+            <p className="text-green-400 font-medium">{progress.extra}</p>
+            <p className="text-xs text-[var(--color-text-muted)] mt-1">
+              Completed in {formatTime(elapsedTime)}
             </p>
           </div>
-          <div className="text-center">
-            <p className="text-lg font-bold">{formatTime(progress.elapsed_seconds)}</p>
-            <p className="text-xs text-[var(--color-text-muted)]">Elapsed</p>
-          </div>
-        </div>
+        )}
       </div>
     )
   }

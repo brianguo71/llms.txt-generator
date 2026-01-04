@@ -105,20 +105,35 @@ class LLMCurator:
         return self._anthropic_client
 
     def format_pages_for_prompt(self, pages: list[dict[str, Any]]) -> str:
-        """Format crawled page data for the LLM prompt."""
+        """Format crawled page data for the LLM prompt.
+        
+        Uses markdown content from Firecrawl, truncated for efficiency.
+        Falls back to first_paragraph/h2s for legacy data.
+        """
         formatted = []
         for i, page in enumerate(pages, 1):
             url = page.get("url", "")
             title = page.get("title", "Untitled") or "Untitled"
-            first_para = (page.get("first_paragraph") or "")[:200]
-            h2s = (page.get("h2_headings") or page.get("h2s") or [])[:5]
             
             entry = f"{i}. URL: {url}\n"
             entry += f"   Title: {title}\n"
-            if first_para:
-                entry += f"   Preview: {first_para}...\n"
-            if h2s:
-                entry += f"   Sections: {', '.join(h2s)}\n"
+            
+            # Prefer markdown content from Firecrawl
+            markdown = page.get("markdown", "")
+            if markdown:
+                # Truncate to ~500 chars for prompt efficiency
+                preview = markdown[:500].strip()
+                if len(markdown) > 500:
+                    preview += "..."
+                entry += f"   Content:\n{preview}\n"
+            else:
+                # Fallback for legacy data without markdown
+                first_para = (page.get("first_paragraph") or "")[:200]
+                h2s = (page.get("h2_headings") or page.get("h2s") or [])[:5]
+                if first_para:
+                    entry += f"   Preview: {first_para}...\n"
+                if h2s:
+                    entry += f"   Sections: {', '.join(h2s)}\n"
             
             formatted.append(entry)
         

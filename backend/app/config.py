@@ -35,11 +35,10 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173"]
 
     # Crawler settings
-    max_pages_per_crawl: int = 100  # Comprehensive coverage
-    max_crawl_depth: int = 3  # Crawl homepage + 2 levels of links
-    crawl_timeout_seconds: int = 300
-    crawl_delay_seconds: float = 0.2  # Fast crawling
-    user_agent: str = "llmstxt-generator/1.0"
+    max_pages_per_crawl: int = 100  # Maximum pages to crawl per site
+    
+    # Firecrawl API
+    firecrawl_api_key: str | None = None
 
     # Change detection
     default_check_interval_hours: int = 24
@@ -65,8 +64,6 @@ class Settings(BaseSettings):
     # Webhook configuration (for changedetection.io callbacks)
     webhook_base_url: str = "http://api:8000"  # Internal Docker network URL
     
-    # Playwright configuration (for JS-rendered pages)
-    playwright_ws_url: str = "ws://playwright:3000"  # WebSocket endpoint for browser
 
 
 @lru_cache

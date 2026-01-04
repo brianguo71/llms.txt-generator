@@ -6,9 +6,8 @@ Automatically generate and maintain [llms.txt](https://llmstxt.org/) files for w
 ## Features
 
 - **Automatic Generation**: Enter a URL and get a well-structured llms.txt file
-- **Intelligent Crawling**: Respects robots.txt, extracts metadata, categorizes pages
+- **Intelligent Crawling**: Firecrawl-powered crawling with JS rendering and clean markdown extraction
 - **LLM-Powered Curation**: Uses GPT-4o-mini to generate meaningful descriptions and categorizations
-- **JavaScript Support**: Playwright-based rendering for JS-heavy websites
 - **Change Detection**: Integrates with changedetection.io for automated monitoring
 - **Scalable Architecture**: Built with extensibility in mind
 
@@ -20,8 +19,8 @@ Automatically generate and maintain [llms.txt](https://llmstxt.org/) files for w
 | Backend | FastAPI (Python) |
 | Database | PostgreSQL |
 | Task Queue | Celery + Redis |
+| Web Crawling | [Firecrawl](https://firecrawl.dev) |
 | Change Detection | changedetection.io |
-| JS Rendering | Playwright |
 
 ## Quick Start
 
@@ -45,6 +44,9 @@ cd llmstxt
 Create a `.env` file in the project root:
 
 ```env
+# Firecrawl (required for crawling)
+FIRECRAWL_API_KEY=fc-your-firecrawl-key
+
 # LLM API Keys (at least one required)
 OPENAI_API_KEY=sk-your-openai-key
 ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
@@ -59,7 +61,7 @@ CHANGEDETECTION_API_KEY=your-changedetection-api-key
 docker-compose up -d
 ```
 
-This starts PostgreSQL, Redis, FastAPI server, Celery worker, changedetection.io, and Playwright.
+This starts PostgreSQL, Redis, FastAPI server, Celery worker, and changedetection.io.
 
 4. **Run database migrations**
 
@@ -82,7 +84,15 @@ npm run dev
 - API Docs: http://localhost:8000/docs
 - Changedetection.io UI: http://localhost:5001
 
-### Getting the Changedetection.io API Key
+### Getting API Keys
+
+#### Firecrawl API Key
+
+1. Sign up at [firecrawl.dev](https://firecrawl.dev)
+2. Copy your API key from the dashboard
+3. Add to `.env` as `FIRECRAWL_API_KEY`
+
+#### Changedetection.io API Key
 
 1. Open http://localhost:5001 in your browser
 2. Go to Settings → API
@@ -93,13 +103,23 @@ npm run dev
 ### Crawling Pipeline
 
 ```
-URL → Crawl (BFS) → Filter (LLM batch) → Curate (LLM) → Generate llms.txt
+URL → Firecrawl API → Filter (LLM batch) → Curate (LLM) → Generate llms.txt
 ```
 
-1. **Crawl**: BFS crawl with priority for navigation links, Playwright fallback for JS pages
+1. **Crawl**: Firecrawl handles BFS crawling, JS rendering, and markdown extraction in one API call
 2. **Filter**: Batch LLM classification to identify relevant pages (excludes blog posts, job listings, etc.)
 3. **Curate**: LLM generates site overview, sections with prose descriptions, and page descriptions
 4. **Generate**: Assemble final llms.txt with Profound-style formatting
+
+### Why Firecrawl?
+
+| Feature | BS4 + Playwright | Firecrawl |
+|---------|----------------|-----------|
+| Code complexity | ~600 lines | ~160 lines |
+| JS rendering | Playwright container required | Built-in |
+| Anti-bot handling | Manual implementation | Automatic |
+| Rate limiting | Manual implementation | Automatic |
+| Content extraction | BeautifulSoup parsing | Clean markdown |
 
 ### Change Detection
 
@@ -131,12 +151,12 @@ Once running, visit `/docs` for interactive API documentation.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `FIRECRAWL_API_KEY` | Firecrawl API key (required) | - |
 | `OPENAI_API_KEY` | OpenAI API key | - |
 | `ANTHROPIC_API_KEY` | Anthropic API key | - |
 | `LLM_PROVIDER` | Which LLM to use (`openai` or `anthropic`) | `openai` |
 | `LLM_MODEL` | Model name | `gpt-4o-mini` |
 | `MAX_PAGES_PER_CRAWL` | Maximum pages to crawl per site | `100` |
-| `MAX_CRAWL_DEPTH` | Maximum link depth to follow | `3` |
 | `CHANGEDETECTION_URL` | URL of changedetection.io instance | `http://changedetection:5000` |
 | `CHANGEDETECTION_API_KEY` | API key for changedetection.io | - |
 | `WEBHOOK_BASE_URL` | Public URL for webhooks (Railway backend URL) | `http://api:8000` |
@@ -153,7 +173,7 @@ llmstxt/
 │   │   ├── models/        # SQLAlchemy models
 │   │   ├── prompts/       # LLM prompts
 │   │   ├── repositories/  # Data access layer
-│   │   ├── services/      # Business logic (crawler, curator, browser)
+│   │   ├── services/      # Business logic (crawler, curator)
 │   │   ├── workers/       # Celery tasks
 │   │   ├── config.py      # Settings
 │   │   ├── database.py    # DB connection
@@ -183,6 +203,7 @@ llmstxt/
 4. Set environment variables:
    - `DATABASE_URL` (from Railway PostgreSQL)
    - `REDIS_URL` (from Railway Redis)
+   - `FIRECRAWL_API_KEY`
    - `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`
    - `CORS_ORIGINS` (your Vercel frontend URL)
 
@@ -329,6 +350,16 @@ ports:
   - "127.0.0.1:5000:5000"
 ```
 
+## Firecrawl Pricing
+
+| Tier | Pages/Month | Cost |
+|------|-------------|------|
+| Free | 500 | $0 |
+| Hobby | 3,000 | $16/mo |
+| Standard | 100,000 | $83/mo |
+
+For development/testing, the free tier is sufficient. Production usage depends on how many sites you're monitoring and their size.
+
 ## Contributing
 
 1. Fork the repository
@@ -343,5 +374,6 @@ MIT License - see LICENSE file for details.
 ## Acknowledgments
 
 - [llms.txt specification](https://llmstxt.org/)
+- [Firecrawl](https://firecrawl.dev) for web crawling
 - [changedetection.io](https://github.com/dgtlmoon/changedetection.io)
 - Built with FastAPI, React, and lots of ☕
