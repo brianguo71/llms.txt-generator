@@ -1,6 +1,7 @@
 """Celery application configuration."""
 
 from celery import Celery
+from celery.schedules import crontab
 
 from app.config import get_settings
 
@@ -29,6 +30,12 @@ celery_app.conf.update(
     worker_concurrency=4,
     # Result backend
     result_expires=3600,  # 1 hour
-    # Note: No beat_schedule - changedetection.io handles monitoring via webhooks
+    # Beat schedule for periodic change detection
+    beat_schedule={
+        "check-projects-for-changes": {
+            "task": "app.workers.tasks.check_projects_for_changes",
+            "schedule": crontab(minute=0),  # Run every hour, on the hour
+        },
+    },
 )
 

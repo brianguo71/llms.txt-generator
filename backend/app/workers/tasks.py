@@ -739,5 +739,228 @@ def targeted_recrawl(self, project_id: str, changed_urls: list[str]) -> dict:
         session.close()
 
 
-# Note: Periodic change detection is handled by changedetection.io via webhooks
-# See app/api/routes/webhooks.py for the webhook handler
+# =============================================================================
+# Native Change Detection Tasks
+# =============================================================================
+
+# Backoff constants
+MIN_CHECK_INTERVAL = 24   # hours (daily)
+MAX_CHECK_INTERVAL = 168  # hours (weekly)
+SIGNIFICANCE_THRESHOLD = 70  # Score threshold for triggering recrawl
+
+
+@celery_app.task
+def check_projects_for_changes():
+    """Periodic task: find and dispatch checks for all due projects.
+    
+    This task runs every hour via Celery Beat and finds projects
+    that are due for a change check based on their next_check_at time.
+    """
+    from datetime import timedelta
+    
+    session = SyncSessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        
+        # Find projects due for checking
+        due_projects = session.query(Project).filter(
+            Project.status == "ready",
+            (Project.next_check_at <= now) | (Project.next_check_at.is_(None))
+        ).all()
+        
+        logger.info(f"Found {len(due_projects)} projects due for change check")
+        
+        for project in due_projects:
+            # Dispatch individual check task
+            check_single_project.delay(str(project.id))
+            
+            # Immediately update next_check_at to prevent duplicate dispatches
+            # The actual next check time will be recalculated after the check completes
+            project.next_check_at = now + timedelta(hours=project.check_interval_hours)
+        
+        session.commit()
+        
+        return {"projects_dispatched": len(due_projects)}
+        
+    except Exception as e:
+        session.rollback()
+        logger.error(f"check_projects_for_changes failed: {e}")
+        return {"error": str(e)}
+        
+    finally:
+        session.close()
+
+
+@celery_app.task(soft_time_limit=180, time_limit=240)
+def check_single_project(project_id: str):
+    """Check a single project for changes and trigger recrawl if significant.
+    
+    Uses Firecrawl to scrape the homepage, compares content hash,
+    and uses LLM to determine if changes are significant enough
+    to warrant regenerating llms.txt.
+    
+    Implements adaptive backoff:
+    - No change: double check interval (up to weekly)
+    - Significant change: reset to daily checks
+    """
+    from datetime import timedelta
+    from app.services.crawler import CrawlerService
+    from app.services.llm_curator import LLMCurator
+    
+    session = SyncSessionLocal()
+    
+    try:
+        project = session.query(Project).filter(Project.id == project_id).first()
+        if not project:
+            logger.warning(f"Project {project_id} not found for change check")
+            return {"error": "Project not found"}
+        
+        if project.status != "ready":
+            logger.info(f"Project {project_id} not ready (status={project.status}), skipping check")
+            return {"skipped": True, "reason": f"Status is {project.status}"}
+        
+        logger.info(f"Checking {project.url} for changes (interval: {project.check_interval_hours}h)")
+        
+        # 1. Scrape homepage with Firecrawl (1 credit)
+        crawler = CrawlerService(settings)
+        page_data = crawler.crawl_page(project.url)
+        
+        if not page_data:
+            logger.warning(f"Failed to scrape {project.url} for change check")
+            # Keep current interval, try again later
+            _schedule_next_check(project, changed=False)
+            project.last_checked_at = datetime.now(timezone.utc)
+            session.commit()
+            return {"error": "Failed to scrape homepage"}
+        
+        new_hash = page_data.get("content_hash", "")
+        old_hash = project.homepage_content_hash
+        
+        # 2. Compare hashes
+        if new_hash == old_hash:
+            logger.info(f"No change detected for {project.url}")
+            _schedule_next_check(project, changed=False)
+            project.last_checked_at = datetime.now(timezone.utc)
+            session.commit()
+            return {
+                "changed": False,
+                "next_check_hours": project.check_interval_hours,
+            }
+        
+        logger.info(f"Content hash changed for {project.url}, analyzing significance...")
+        
+        # 3. Get old content for comparison
+        old_content = _get_stored_homepage_content(session, project_id)
+        new_content = page_data.get("markdown", "")
+        
+        # 4. Use LLM to score significance
+        curator = LLMCurator(settings)
+        significance = curator.analyze_change_significance(old_content, new_content)
+        
+        score = significance.get("score", 0)
+        reason = significance.get("reason", "Unknown")
+        
+        logger.info(f"Change significance for {project.url}: score={score}, reason={reason}")
+        
+        if score >= SIGNIFICANCE_THRESHOLD:
+            # Significant change - trigger full recrawl
+            logger.info(f"Significant change detected for {project.url}, triggering recrawl")
+            
+            # Create new crawl job
+            job = CrawlJob(project_id=project.id, trigger_reason="change_detected")
+            session.add(job)
+            session.flush()
+            
+            # Update project state
+            project.homepage_content_hash = new_hash
+            project.last_checked_at = datetime.now(timezone.utc)
+            project.check_interval_hours = MIN_CHECK_INTERVAL  # Reset to daily
+            _schedule_next_check(project, changed=True)
+            session.commit()
+            
+            # Trigger full recrawl
+            initial_crawl.delay(str(project.id), str(job.id))
+            
+            return {
+                "changed": True,
+                "significant": True,
+                "score": score,
+                "reason": reason,
+                "action": "recrawl_triggered",
+            }
+        else:
+            # Not significant - back off
+            logger.info(f"Non-significant change for {project.url}, backing off")
+            
+            project.homepage_content_hash = new_hash
+            project.last_checked_at = datetime.now(timezone.utc)
+            _schedule_next_check(project, changed=False)
+            session.commit()
+            
+            return {
+                "changed": True,
+                "significant": False,
+                "score": score,
+                "reason": reason,
+                "next_check_hours": project.check_interval_hours,
+            }
+        
+    except Exception as e:
+        session.rollback()
+        logger.error(f"check_single_project failed for {project_id}: {e}")
+        return {"error": str(e)}
+        
+    finally:
+        session.close()
+
+
+def _schedule_next_check(project: Project, changed: bool) -> None:
+    """Calculate and set next check time with adaptive backoff.
+    
+    Args:
+        project: The project to update
+        changed: Whether significant changes were detected
+    """
+    from datetime import timedelta
+    
+    now = datetime.now(timezone.utc)
+    
+    if changed:
+        # Reset to daily checks
+        project.check_interval_hours = MIN_CHECK_INTERVAL
+    else:
+        # Double interval, cap at weekly
+        new_interval = min(project.check_interval_hours * 2, MAX_CHECK_INTERVAL)
+        project.check_interval_hours = new_interval
+    
+    project.next_check_at = now + timedelta(hours=project.check_interval_hours)
+    
+    logger.info(f"Scheduled next check for {project.url} in {project.check_interval_hours}h")
+
+
+def _get_stored_homepage_content(session, project_id: str) -> str:
+    """Get the stored homepage content from the most recent crawl.
+    
+    Returns:
+        Homepage markdown content, or empty string if not found
+    """
+    # Find the homepage page from the latest version
+    max_version = session.query(func.max(Page.version)).filter(
+        Page.project_id == project_id
+    ).scalar() or 0
+    
+    project = session.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        return ""
+    
+    # Find page matching the project URL
+    homepage = session.query(Page).filter(
+        Page.project_id == project_id,
+        Page.version == max_version,
+        Page.url == project.url,
+    ).first()
+    
+    if homepage and homepage.first_paragraph:
+        return homepage.first_paragraph
+    
+    return ""

@@ -1,9 +1,10 @@
 """Project management routes."""
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel, HttpUrl
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import DbSession
 from app.config import get_settings
@@ -13,54 +14,11 @@ from app.repositories import (
     PostgresPageRepository,
     PostgresProjectRepository,
 )
-from app.services.changedetection_client import (
-    ChangeDetectionClient,
-    WatchConfig,
-    get_changedetection_client,
-)
 from app.services.url_validator import URLValidator
 from app.workers.tasks import initial_crawl
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-
-def create_changedetection_watch(project_id: str, url: str, project_name: str) -> None:
-    """Background task to create a changedetection.io watch for a project."""
-    try:
-        client = get_changedetection_client(settings)
-        
-        if not client.is_healthy():
-            logger.warning("ChangeDetection.io not available, skipping watch creation")
-            return
-        
-        config = WatchConfig(
-            url=url,
-            title=project_name,
-            check_interval_minutes=5,
-        )
-        
-        watch_id = client.create_watch(config, project_id)
-        logger.info(f"Created changedetection watch {watch_id} for project {project_id}")
-        
-    except Exception as e:
-        logger.error(f"Failed to create changedetection watch for project {project_id}: {e}")
-
-
-def delete_changedetection_watches(project_id: str) -> None:
-    """Background task to delete all changedetection.io watches for a project."""
-    try:
-        client = get_changedetection_client(settings)
-        
-        if not client.is_healthy():
-            logger.warning("ChangeDetection.io not available, skipping watch deletion")
-            return
-        
-        deleted_count = client.delete_watches_by_project(project_id)
-        logger.info(f"Deleted {deleted_count} changedetection watches for project {project_id}")
-        
-    except Exception as e:
-        logger.error(f"Failed to delete changedetection watches for project {project_id}: {e}")
 
 router = APIRouter()
 
@@ -81,6 +39,9 @@ class ProjectResponse(BaseModel):
     status: str
     pages_count: int | None = None
     created_at: str
+    # Native change detection fields
+    next_check_at: str | None = None
+    check_interval_hours: int | None = None
 
     class Config:
         from_attributes = True
@@ -124,7 +85,6 @@ class CrawlProgressResponse(BaseModel):
 async def create_project(
     request: CreateProjectRequest,
     db: DbSession,
-    background_tasks: BackgroundTasks,
 ) -> ProjectResponse:
     """Create a new project and start initial crawl."""
     project_repo = PostgresProjectRepository(db)
@@ -152,12 +112,13 @@ async def create_project(
             detail="A project with this URL already exists",
         )
 
-    # Create project (use extracted title as default name if available)
+    # Create project with native change detection
     project_name = request.name or validation.title or url_str
     project = Project(
         url=url_str,
         name=project_name,
-        change_detection_method="webhook",  # Uses changedetection.io
+        check_interval_hours=24,  # Start with daily checks
+        next_check_at=datetime.now(timezone.utc) + timedelta(hours=24),
     )
     await project_repo.save(project)
 
@@ -173,20 +134,14 @@ async def create_project(
     crawl_job.celery_task_id = task.id
     await job_repo.save(crawl_job)
 
-    # Create changedetection.io watch in background
-    background_tasks.add_task(
-        create_changedetection_watch,
-        project.id,
-        project.url,
-        project.name,
-    )
-
     return ProjectResponse(
         id=project.id,
         url=project.url,
         name=project.name,
         status=project.status,
         created_at=project.created_at.isoformat(),
+        next_check_at=project.next_check_at.isoformat() if project.next_check_at else None,
+        check_interval_hours=project.check_interval_hours,
     )
 
 
@@ -211,6 +166,8 @@ async def list_projects(
                 status=project.status,
                 pages_count=pages_count,
                 created_at=project.created_at.isoformat(),
+                next_check_at=project.next_check_at.isoformat() if project.next_check_at else None,
+                check_interval_hours=project.check_interval_hours,
             )
         )
 
@@ -242,6 +199,8 @@ async def get_project(
         status=project.status,
         pages_count=pages_count,
         created_at=project.created_at.isoformat(),
+        next_check_at=project.next_check_at.isoformat() if project.next_check_at else None,
+        check_interval_hours=project.check_interval_hours,
     )
 
 
@@ -300,7 +259,6 @@ async def recrawl_project(
 async def delete_project(
     project_id: str,
     db: DbSession,
-    background_tasks: BackgroundTasks,
 ) -> None:
     """Delete a project."""
     project_repo = PostgresProjectRepository(db)
@@ -311,9 +269,6 @@ async def delete_project(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
-
-    # Delete changedetection.io watches in background
-    background_tasks.add_task(delete_changedetection_watches, project_id)
 
     await project_repo.delete(project_id)
 

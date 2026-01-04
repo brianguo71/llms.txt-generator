@@ -53,16 +53,6 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     llm_provider: Literal["openai", "anthropic"] = "openai"
     llm_model: str = "gpt-4o-mini"
-
-    # ChangeDetection.io integration
-    changedetection_url: str = "http://changedetection:5000"
-    changedetection_api_key: str | None = None
-    
-    # Webshare.io proxy configuration
-    webshare_proxy_url: str | None = None  # Format: http://user:pass@proxy.webshare.io:80
-    
-    # Webhook configuration (for changedetection.io callbacks)
-    webhook_base_url: str = "http://api:8000"  # Internal Docker network URL
     
 
 

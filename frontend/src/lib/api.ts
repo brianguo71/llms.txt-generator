@@ -107,6 +107,9 @@ export interface Project {
   status: 'pending' | 'crawling' | 'ready' | 'failed'
   pages_count?: number
   created_at: string
+  // Native change detection fields
+  next_check_at?: string
+  check_interval_hours?: number
 }
 
 export interface CrawlJob {
