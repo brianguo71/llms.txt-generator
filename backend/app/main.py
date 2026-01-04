@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import llmstxt, projects, webhooks
+from app.api.routes import llmstxt, projects
 from app.config import get_settings
 from app.database import engine
 
@@ -40,7 +40,6 @@ app.add_middleware(
 # Include routers
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 app.include_router(llmstxt.router, prefix="/api", tags=["llmstxt"])
-app.include_router(webhooks.router, prefix="/api", tags=["webhooks"])
 
 
 @app.get("/health")

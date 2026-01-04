@@ -24,13 +24,12 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(255))
     sitemap_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
-    # Change detection settings
-    change_detection_method: Mapped[str] = mapped_column(
-        String(50), default="webhook"  # Uses changedetection.io webhooks
+    # Native change detection settings
+    check_interval_hours: Mapped[int] = mapped_column(Integer, default=24)
+    next_check_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
-    vendor_subscription_id: Mapped[str | None] = mapped_column(
-        String(255), nullable=True
-    )
+    homepage_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Status
     status: Mapped[str] = mapped_column(String(50), default="pending")

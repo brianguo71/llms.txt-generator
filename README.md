@@ -8,7 +8,7 @@ Automatically generate and maintain [llms.txt](https://llmstxt.org/) files for w
 - **Automatic Generation**: Enter a URL and get a well-structured llms.txt file
 - **Intelligent Crawling**: Firecrawl-powered crawling with JS rendering and clean markdown extraction
 - **LLM-Powered Curation**: Uses GPT-4o-mini to generate meaningful descriptions and categorizations
-- **Change Detection**: Integrates with changedetection.io for automated monitoring
+- **Native Change Detection**: Automatic monitoring with adaptive scheduling (daily to weekly)
 - **Scalable Architecture**: Built with extensibility in mind
 
 ## Tech Stack
@@ -20,7 +20,7 @@ Automatically generate and maintain [llms.txt](https://llmstxt.org/) files for w
 | Database | PostgreSQL |
 | Task Queue | Celery + Redis |
 | Web Crawling | [Firecrawl](https://firecrawl.dev) |
-| Change Detection | changedetection.io |
+| Change Detection | Celery Beat + Firecrawl |
 
 ## Quick Start
 
@@ -50,9 +50,6 @@ FIRECRAWL_API_KEY=fc-your-firecrawl-key
 # LLM API Keys (at least one required)
 OPENAI_API_KEY=sk-your-openai-key
 ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
-
-# Change Detection
-CHANGEDETECTION_API_KEY=your-changedetection-api-key
 ```
 
 3. **Start the infrastructure**
@@ -61,7 +58,7 @@ CHANGEDETECTION_API_KEY=your-changedetection-api-key
 docker-compose up -d
 ```
 
-This starts PostgreSQL, Redis, FastAPI server, Celery worker, and changedetection.io.
+This starts PostgreSQL, Redis, FastAPI server, and Celery worker with beat scheduler.
 
 4. **Run database migrations**
 
@@ -82,7 +79,6 @@ npm run dev
 - Frontend: http://localhost:5173
 - API: http://localhost:8000
 - API Docs: http://localhost:8000/docs
-- Changedetection.io UI: http://localhost:5001
 
 ### Getting API Keys
 
@@ -91,12 +87,6 @@ npm run dev
 1. Sign up at [firecrawl.dev](https://firecrawl.dev)
 2. Copy your API key from the dashboard
 3. Add to `.env` as `FIRECRAWL_API_KEY`
-
-#### Changedetection.io API Key
-
-1. Open http://localhost:5001 in your browser
-2. Go to Settings → API
-3. Copy the API key and add it to your `.env` file
 
 ## Architecture
 
@@ -123,11 +113,16 @@ URL → Firecrawl API → Filter (LLM batch) → Curate (LLM) → Generate llms.
 
 ### Change Detection
 
-The system uses [changedetection.io](https://github.com/dgtlmoon/changedetection.io) for monitoring:
+The system uses native change detection powered by Celery Beat:
 
-- When a project is created, a watch is registered with changedetection.io
-- Changedetection.io monitors the page and sends webhooks when changes are detected
-- The webhook triggers a targeted re-crawl that only updates affected sections
+1. **Scheduled checks**: Celery Beat runs on a configurable schedule to find projects due for checking
+2. **Homepage scrape**: Uses Firecrawl to scrape
+3. **Hash comparison**: Compares content hash with stored hash
+4. **AI significance**: If changed, uses LLM to determine if changes are significant
+5. **Adaptive backoff**: 
+   - No changes: doubles interval (ex: 24h → 48h → 96h → 168h max)
+   - Significant changes: resets interval
+
 
 ## API Documentation
 
@@ -143,7 +138,6 @@ Once running, visit `/docs` for interactive API documentation.
 | DELETE | `/api/projects/{id}` | Delete project |
 | GET | `/api/projects/{id}/llmstxt` | Get llms.txt content |
 | GET | `/api/projects/{id}/llmstxt/versions` | Get version history |
-| POST | `/api/webhooks/changedetection` | Webhook for change notifications |
 
 ## Configuration
 
@@ -157,9 +151,6 @@ Once running, visit `/docs` for interactive API documentation.
 | `LLM_PROVIDER` | Which LLM to use (`openai` or `anthropic`) | `openai` |
 | `LLM_MODEL` | Model name | `gpt-4o-mini` |
 | `MAX_PAGES_PER_CRAWL` | Maximum pages to crawl per site | `100` |
-| `CHANGEDETECTION_URL` | URL of changedetection.io instance | `http://changedetection:5000` |
-| `CHANGEDETECTION_API_KEY` | API key for changedetection.io | - |
-| `WEBHOOK_BASE_URL` | Public URL for webhooks (Railway backend URL) | `http://api:8000` |
 | `DATABASE_URL` | PostgreSQL connection string | - |
 | `REDIS_URL` | Redis connection string | - |
 
@@ -208,7 +199,7 @@ llmstxt/
    - `CORS_ORIGINS` (your Vercel frontend URL)
 
 5. Add a worker service:
-   - Command: `celery -A app.workers.celery_app worker --loglevel=info`
+   - Command: `celery -A app.workers.celery_app worker --beat --loglevel=info`
 
 ### Frontend (Vercel)
 
@@ -216,139 +207,6 @@ llmstxt/
 2. Set root directory to `frontend`
 3. Add environment variable:
    - `VITE_API_URL` = your Railway backend URL
-
-### Change Detection (Hetzner VPS)
-
-For production, run changedetection.io on a separate VPS for persistent storage and resource isolation.
-
-**Recommended: Hetzner CX22** (~€4.35/mo) - 2 vCPU, 4GB RAM, 40GB SSD
-
-#### 1. Create the VPS
-
-1. Sign up at [Hetzner Cloud](https://www.hetzner.com/cloud)
-2. Create a new project
-3. Add a server:
-   - Location: Any (Ashburn for US East)
-   - Image: Ubuntu 24.04
-   - Type: CX22 (2 vCPU, 4GB RAM)
-   - SSH key: Add your public key
-4. Note the server's public IP address
-
-#### 2. Initial Server Setup
-
-SSH into your server:
-
-```bash
-ssh root@YOUR_SERVER_IP
-
-# Update system
-apt update && apt upgrade -y
-
-# Install Docker
-curl -fsSL https://get.docker.com | sh
-
-# Install Docker Compose
-apt install docker-compose-plugin -y
-
-# Create directory for changedetection
-mkdir -p /opt/changedetection
-cd /opt/changedetection
-```
-
-#### 3. Create Docker Compose File
-
-Create `/opt/changedetection/docker-compose.yml`:
-
-```yaml
-services:
-  changedetection:
-    image: ghcr.io/dgtlmoon/changedetection.io
-    restart: unless-stopped
-    volumes:
-      - ./data:/datastore
-    ports:
-      - "5000:5000"
-    environment:
-      - PLAYWRIGHT_DRIVER_URL=ws://playwright:3000
-      - BASE_URL=http://YOUR_SERVER_IP:5000
-    depends_on:
-      - playwright
-
-  playwright:
-    image: browserless/chrome:latest
-    restart: unless-stopped
-    environment:
-      - SCREEN_WIDTH=1920
-      - SCREEN_HEIGHT=1080
-      - SCREEN_DEPTH=16
-      - ENABLE_DEBUGGER=false
-      - PREBOOT_CHROME=true
-      - CONNECTION_TIMEOUT=300000
-      - MAX_CONCURRENT_SESSIONS=10
-```
-
-Replace `YOUR_SERVER_IP` with your actual server IP.
-
-#### 4. Start the Services
-
-```bash
-cd /opt/changedetection
-docker compose up -d
-```
-
-#### 5. Configure Firewall
-
-```bash
-# Allow SSH and changedetection port
-ufw allow 22
-ufw allow 5000
-ufw enable
-```
-
-#### 6. Get API Key
-
-1. Open `http://YOUR_SERVER_IP:5000` in your browser
-2. Go to Settings → API
-3. Copy the API key
-
-#### 7. Configure Your Backend
-
-Update your Railway backend environment variables:
-
-```
-CHANGEDETECTION_URL=http://YOUR_SERVER_IP:5000
-CHANGEDETECTION_API_KEY=your-api-key-from-step-6
-WEBHOOK_BASE_URL=https://your-railway-backend.up.railway.app
-```
-
-#### Optional: Add HTTPS with Caddy
-
-For production, add HTTPS using Caddy as a reverse proxy:
-
-```bash
-# Install Caddy
-apt install -y debian-keyring debian-archive-keyring apt-transport-https
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-apt update && apt install caddy -y
-
-# Configure Caddy (replace with your domain)
-cat > /etc/caddy/Caddyfile << 'EOF'
-changedetection.yourdomain.com {
-    reverse_proxy localhost:5000
-}
-EOF
-
-# Restart Caddy
-systemctl restart caddy
-```
-
-Then update your Docker Compose to only bind to localhost:
-
-```yaml
-ports:
-  - "127.0.0.1:5000:5000"
-```
 
 ## Firecrawl Pricing
 
@@ -359,6 +217,16 @@ ports:
 | Standard | 100,000 | $83/mo |
 
 For development/testing, the free tier is sufficient. Production usage depends on how many sites you're monitoring and their size.
+
+### Change Detection Cost
+
+Each change check uses 1 Firecrawl credit (homepage scrape). With adaptive backoff:
+
+| Sites | Active (daily) | Inactive (weekly) | Monthly Credits |
+|-------|---------------|-------------------|-----------------|
+| 10 | 5 | 5 | ~180 |
+| 50 | 10 | 40 | ~500 |
+| 100 | 20 | 80 | ~1000 |
 
 ## Contributing
 
@@ -375,5 +243,3 @@ MIT License - see LICENSE file for details.
 
 - [llms.txt specification](https://llmstxt.org/)
 - [Firecrawl](https://firecrawl.dev) for web crawling
-- [changedetection.io](https://github.com/dgtlmoon/changedetection.io)
-- Built with FastAPI, React, and lots of ☕

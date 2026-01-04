@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from app.config import Settings
 from app.prompts import (
+    CHANGE_SIGNIFICANCE_PROMPT,
     CURATION_PROMPT,
     PAGE_CATEGORIZATION_PROMPT,
     PAGE_DESCRIPTION_PROMPT,
@@ -597,3 +598,62 @@ class LLMCurator:
             sections=sections,
             base_url=base_url,
         )
+
+    def analyze_change_significance(
+        self,
+        old_content: str,
+        new_content: str,
+    ) -> dict[str, Any]:
+        """Analyze whether content changes are significant enough to regenerate llms.txt.
+        
+        Args:
+            old_content: Previous homepage content (markdown, truncated)
+            new_content: New homepage content (markdown, truncated)
+            
+        Returns:
+            Dict with "score" (0-100) and "reason" (brief explanation)
+        """
+        # Truncate content to avoid token limits
+        max_chars = 3000
+        old_truncated = old_content[:max_chars] if old_content else "(empty)"
+        new_truncated = new_content[:max_chars] if new_content else "(empty)"
+        
+        prompt = CHANGE_SIGNIFICANCE_PROMPT.format(
+            old_content=old_truncated,
+            new_content=new_truncated,
+        )
+        
+        prompt_hash = hashlib.md5(prompt.encode()).hexdigest()[:8]
+        logger.info(f"Change significance prompt hash: {prompt_hash}")
+        
+        response = self._call_llm(prompt)
+        
+        # Parse JSON response
+        try:
+            # Clean up response - remove markdown code blocks if present
+            clean_response = response.strip()
+            if clean_response.startswith("```"):
+                lines = clean_response.split("\n")
+                clean_response = "\n".join(lines[1:-1])
+            
+            result = json.loads(clean_response)
+            
+            score = int(result.get("score", 0))
+            reason = result.get("reason", "No reason provided")
+            
+            logger.info(f"Change significance: score={score}, reason={reason}")
+            
+            return {
+                "score": max(0, min(100, score)),  # Clamp to 0-100
+                "reason": reason,
+            }
+            
+        except (json.JSONDecodeError, ValueError, KeyError) as e:
+            logger.warning(f"Failed to parse change significance response: {e}")
+            logger.warning(f"Raw response: {response[:200]}")
+            
+            # Default to significant if parsing fails (safer to regenerate)
+            return {
+                "score": 75,
+                "reason": "Failed to parse LLM response, defaulting to significant",
+            }

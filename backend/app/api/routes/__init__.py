@@ -1,5 +1,5 @@
 """API route modules."""
 
-from app.api.routes import llmstxt, projects, webhooks
+from app.api.routes import llmstxt, projects
 
-__all__ = ["projects", "llmstxt", "webhooks"]
+__all__ = ["projects", "llmstxt"]
