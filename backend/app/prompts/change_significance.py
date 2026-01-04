@@ -6,7 +6,6 @@ Determine if these changes are significant enough to warrant regenerating the si
 
 SIGNIFICANT changes (score 70-100):
 - New product/feature announcements
-- Pricing changes
 - New sections or pages
 - Company information updates
 - Substantial content additions or removals
@@ -14,6 +13,7 @@ SIGNIFICANT changes (score 70-100):
 - New services or offerings
 
 NOT SIGNIFICANT changes (score 0-30):
+- Pricing changes
 - Date/time updates (copyright year, "last updated")
 - Advertisement changes
 - Minor typo fixes
