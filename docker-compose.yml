@@ -39,7 +39,6 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - DEBUG=true
       - CORS_ORIGINS=["http://localhost:5173"]
-      # Keys loaded from .env file via env_file directive
     depends_on:
       db:
         condition: service_healthy
@@ -57,7 +56,6 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-llmstxt}
       - REDIS_URL=redis://redis:6379/0
-      # Keys loaded from .env file via env_file directive
     depends_on:
       db:
         condition: service_healthy
@@ -65,39 +63,7 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
-<<<<<<< Updated upstream
-    command: celery -A app.workers.celery_app worker --loglevel=info
-
-  # ChangeDetection.io for website monitoring
-  changedetection:
-    image: dgtlmoon/changedetection.io:latest
-    restart: always
-    ports:
-      - "5001:5000"  # Use 5001 externally since 5000 is often used by macOS
-    volumes:
-      - changedetection_data:/datastore
-    environment:
-      - PLAYWRIGHT_DRIVER_URL=ws://playwright:3000
-      - BASE_URL=http://localhost:5001
-      - HIDE_REFERER=true
-      - USE_X_SETTINGS=1
-      - API_ACCESS_TOKEN_ENABLED=true
-    env_file:
-      - .env
-    depends_on:
-      - playwright
-
-  # Playwright browser for JavaScript-rendered pages
-  playwright:
-    image: dgtlmoon/sockpuppetbrowser:latest
-    restart: always
-    environment:
-      - SCREEN_WIDTH=1920
-      - SCREEN_HEIGHT=1080
-      - MAX_CONCURRENT_CHROME_PROCESSES=4
-=======
     command: celery -A app.workers.celery_app worker --beat --loglevel=info
->>>>>>> Stashed changes
 
 volumes:
   postgres_data:
