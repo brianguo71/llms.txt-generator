@@ -88,10 +88,22 @@ class URLValidator:
                 response = await client.get(url)
 
                 # Check status code
-                if response.status_code >= 400:
+                # Allow 403s through - these are often anti-bot protections that Firecrawl can handle
+                if response.status_code >= 400 and response.status_code != 403:
                     return ValidationResult(
                         is_valid=False,
                         error_message=f"Site returned error: HTTP {response.status_code}",
+                    )
+                
+                # For 403, the site exists but has anti-bot protection
+                # Firecrawl can handle this, so we'll allow it
+                if response.status_code == 403:
+                    # Try to extract title even from 403 response
+                    title = self._extract_title(response.text) if response.text else None
+                    return ValidationResult(
+                        is_valid=True,
+                        final_url=url.rstrip("/"),
+                        title=title or "Protected Site",
                     )
 
                 # Check content type
