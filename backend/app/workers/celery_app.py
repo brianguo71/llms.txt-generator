@@ -32,9 +32,15 @@ celery_app.conf.update(
     result_expires=3600,  # 1 hour
     # Beat schedule for periodic change detection
     beat_schedule={
+        # Full rescrape check (every hour, dispatches due projects)
         "check-projects-for-changes": {
             "task": "app.workers.tasks.check_projects_for_changes",
             "schedule": crontab(minute=0),  # Run every hour, on the hour
+        },
+        # Lightweight check dispatcher (every minute, dispatches due projects)
+        "dispatch-lightweight-checks": {
+            "task": "app.workers.tasks.dispatch_lightweight_checks",
+            "schedule": crontab(),  # Every minute
         },
     },
 )

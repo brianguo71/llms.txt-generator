@@ -334,6 +334,10 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
             markdown = page_data.get("markdown", "")
             first_para = markdown[:2000] if markdown else page_data.get("first_paragraph")
             
+            # Compute baseline hash for lightweight change detection
+            content_for_hash = markdown or first_para or ""
+            baseline_hash = hashlib.sha256(content_for_hash.encode()).hexdigest() if content_for_hash else None
+            
             page = Page(
                 project_id=project.id,
                 url=page_data.get("url", ""),
@@ -341,8 +345,12 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
                 description=page_data.get("description"),
                 first_paragraph=first_para,
                 content_hash=page_data.get("content_hash"),
+                baseline_html_hash=baseline_hash,  # Set baseline for lightweight checks
                 depth=page_data.get("depth", 0),
                 version=new_version,
+                # Clear ETag so first lightweight check fetches fresh headers
+                etag=None,
+                last_modified_header=None,
             )
             session.add(page)
 
@@ -980,3 +988,250 @@ def _get_stored_homepage_content(session, project_id: str) -> str:
         return homepage.first_paragraph
     
     return ""
+
+
+# =============================================================================
+# Lightweight Change Detection Tasks
+# =============================================================================
+
+@celery_app.task
+def dispatch_lightweight_checks():
+    """Dispatch lightweight checks for projects that are due.
+    
+    Runs every minute via Celery Beat. Projects are staggered so that
+    each project is checked once per LIGHTWEIGHT_CHECK_INTERVAL_MINUTES.
+    
+    Example: 10,000 projects with 5 min interval = ~2,000 dispatched per minute
+    """
+    from datetime import timedelta
+    
+    if not settings.lightweight_check_enabled:
+        return {"skipped": True, "reason": "disabled"}
+    
+    session = SyncSessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        interval = timedelta(minutes=settings.lightweight_check_interval_minutes)
+        
+        # Find projects due for lightweight check
+        due_projects = session.query(Project).filter(
+            Project.status == "ready",
+            (Project.next_lightweight_check_at <= now) | (Project.next_lightweight_check_at.is_(None))
+        ).all()
+        
+        dispatched = 0
+        for project in due_projects:
+            # Dispatch the check
+            lightweight_batch_check.delay(str(project.id))
+            
+            # Schedule next check (staggered)
+            project.next_lightweight_check_at = now + interval
+            dispatched += 1
+        
+        session.commit()
+        
+        if dispatched > 0:
+            logger.info(f"Dispatched {dispatched} lightweight checks")
+        return {"dispatched": dispatched, "interval_minutes": settings.lightweight_check_interval_minutes}
+    
+    except Exception as e:
+        session.rollback()
+        logger.error(f"dispatch_lightweight_checks failed: {e}")
+        return {"error": str(e)}
+    finally:
+        session.close()
+
+
+@celery_app.task(soft_time_limit=120, time_limit=150)
+def lightweight_batch_check(project_id: str):
+    """Check all pages for cumulative drift using async HEAD requests.
+    
+    Uses two-hash strategy:
+    - etag: For optimizing HEAD requests (skip fetch if unchanged)
+    - baseline_html_hash: For significance analysis (cumulative drift detection)
+    """
+    import asyncio
+    import hashlib
+    import httpx
+    from app.services.change_analyzer import ChangeAnalyzer
+    
+    session = SyncSessionLocal()
+    try:
+        project = session.query(Project).filter(Project.id == project_id).first()
+        if not project or project.status != "ready":
+            return {"skipped": True, "reason": "not_ready"}
+        
+        # Get max version for this project
+        max_version = session.query(func.max(Page.version)).filter(
+            Page.project_id == project_id
+        ).scalar() or 0
+        
+        # Get all pages with their stored etags and baseline hashes
+        pages = session.query(Page).filter(
+            Page.project_id == project_id,
+            Page.version == max_version,
+        ).all()
+        
+        if not pages:
+            return {"skipped": True, "reason": "no_pages"}
+        
+        logger.info(f"Lightweight check for {project.url}: {len(pages)} pages")
+        
+        # Async HEAD requests with rate limiting
+        async def check_etags():
+            connector = httpx.AsyncHTTPTransport(retries=1)
+            async with httpx.AsyncClient(transport=connector, timeout=10.0, follow_redirects=True) as client:
+                semaphore = asyncio.Semaphore(settings.lightweight_concurrent_requests)
+                delay = settings.lightweight_request_delay_ms / 1000
+                
+                async def check_one(page):
+                    async with semaphore:
+                        if delay > 0:
+                            await asyncio.sleep(delay)
+                        try:
+                            headers = {}
+                            if page.etag:
+                                headers["If-None-Match"] = page.etag
+                            if page.last_modified_header:
+                                headers["If-Modified-Since"] = page.last_modified_header
+                            
+                            resp = await client.head(page.url, headers=headers)
+                            
+                            # 304 = not modified
+                            if resp.status_code == 304:
+                                return {"url": page.url, "changed": False}
+                            
+                            # Check if ETag or Last-Modified changed
+                            new_etag = resp.headers.get("ETag")
+                            new_last_modified = resp.headers.get("Last-Modified")
+                            
+                            etag_changed = new_etag and new_etag != page.etag
+                            lm_changed = new_last_modified and new_last_modified != page.last_modified_header
+                            
+                            return {
+                                "url": page.url,
+                                "changed": etag_changed or lm_changed or (not page.etag and not page.last_modified_header),
+                                "new_etag": new_etag,
+                                "new_last_modified": new_last_modified,
+                                "page_id": str(page.id),
+                            }
+                        except Exception as e:
+                            logger.debug(f"HEAD failed for {page.url}: {e}")
+                            return {"url": page.url, "changed": False, "error": str(e)}
+                
+                return await asyncio.gather(*[check_one(p) for p in pages])
+        
+        results = asyncio.run(check_etags())
+        
+        # Collect pages with changes
+        changed_results = [r for r in results if r.get("changed")]
+        errors = [r for r in results if r.get("error")]
+        
+        if not changed_results:
+            logger.debug(f"No changes detected for {project.url}")
+            return {
+                "changed": False,
+                "pages_checked": len(pages),
+                "errors": len(errors),
+            }
+        
+        logger.info(f"{len(changed_results)}/{len(pages)} pages changed for {project.url}")
+        
+        # Fast path: bulk change threshold
+        change_ratio = len(changed_results) / len(pages)
+        if change_ratio > settings.lightweight_change_threshold_percent / 100:
+            logger.info(f"Bulk change ({change_ratio:.0%}) for {project.url}, triggering rescrape")
+            _trigger_lightweight_rescrape(session, project)
+            session.commit()
+            return {"significant": True, "reason": "bulk_change", "rescrape_triggered": True}
+        
+        # Fetch HTML for changed pages and compare to baseline
+        pages_by_url = {p.url: p for p in pages}
+        
+        async def fetch_changed():
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                semaphore = asyncio.Semaphore(settings.lightweight_concurrent_requests)
+                
+                async def fetch_one(result):
+                    async with semaphore:
+                        try:
+                            resp = await client.get(result["url"])
+                            page = pages_by_url.get(result["url"])
+                            baseline = page.first_paragraph if page else ""
+                            return {
+                                "url": result["url"],
+                                "current_html": resp.text,
+                                "baseline_html": baseline,
+                                "new_etag": result.get("new_etag"),
+                                "new_last_modified": result.get("new_last_modified"),
+                            }
+                        except Exception as e:
+                            logger.debug(f"GET failed for {result['url']}: {e}")
+                            return None
+                
+                fetched = await asyncio.gather(*[fetch_one(r) for r in changed_results])
+                return [f for f in fetched if f]
+        
+        fetched_pages = asyncio.run(fetch_changed())
+        
+        if not fetched_pages:
+            logger.info(f"Failed to fetch changed pages for {project.url}")
+            return {"changed": True, "fetch_failed": True}
+        
+        # Analyze cumulative significance
+        analyzer = ChangeAnalyzer(significance_threshold=settings.lightweight_significance_threshold)
+        significance = analyzer.analyze_batch_significance(
+            fetched_pages, 
+            len(pages),
+            settings.lightweight_change_threshold_percent,
+        )
+        
+        if significance["significant"]:
+            logger.info(f"Significant drift for {project.url} (score={significance['score']}, reason={significance['reason']})")
+            _trigger_lightweight_rescrape(session, project)
+            session.commit()
+            return {
+                "significant": True,
+                "score": significance["score"],
+                "reason": significance["reason"],
+                "rescrape_triggered": True,
+            }
+        else:
+            # Update ETags only (keep baseline unchanged for cumulative detection)
+            logger.debug(f"Non-significant changes for {project.url} (score={significance['score']}), updating ETags")
+            for fp in fetched_pages:
+                page = pages_by_url.get(fp["url"])
+                if page:
+                    if fp.get("new_etag"):
+                        page.etag = fp["new_etag"]
+                    if fp.get("new_last_modified"):
+                        page.last_modified_header = fp["new_last_modified"]
+            
+            session.commit()
+            return {
+                "significant": False,
+                "score": significance["score"],
+                "pages_checked": len(pages),
+                "pages_changed": len(changed_results),
+            }
+    
+    except Exception as e:
+        session.rollback()
+        logger.error(f"lightweight_batch_check failed for {project_id}: {e}")
+        return {"error": str(e)}
+    finally:
+        session.close()
+
+
+def _trigger_lightweight_rescrape(session, project: Project):
+    """Trigger a full rescrape from lightweight change detection."""
+    job = CrawlJob(project_id=project.id, trigger_reason="lightweight_change_detected")
+    session.add(job)
+    session.flush()  # Get job ID
+    
+    project.status = "pending"  # Will be set to crawling by initial_crawl
+    
+    logger.info(f"Triggering rescrape for {project.url} due to lightweight change detection")
+    
+    # Dispatch async
+    initial_crawl.delay(str(project.id), str(job.id))

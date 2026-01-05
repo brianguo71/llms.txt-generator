@@ -40,7 +40,9 @@ class Page(Base):
     last_modified: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    last_modified_header: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Raw header for If-Modified-Since
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    baseline_html_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)  # For lightweight change detection
     sitemap_lastmod: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -24,12 +24,17 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(255))
     sitemap_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
-    # Native change detection settings
+    # Native change detection settings (full rescrape)
     check_interval_hours: Mapped[int] = mapped_column(Integer, default=24)
     next_check_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     homepage_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Lightweight change detection (staggered scheduling)
+    next_lightweight_check_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Status
     status: Mapped[str] = mapped_column(String(50), default="pending")

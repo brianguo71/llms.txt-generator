@@ -1,6 +1,7 @@
 """Project management routes."""
 
 import logging
+import random
 from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel, HttpUrl
@@ -114,11 +115,17 @@ async def create_project(
 
     # Create project with native change detection
     project_name = request.name or validation.title or url_str
+    
+    # Stagger lightweight checks: random offset within interval to spread load
+    lightweight_interval = settings.lightweight_check_interval_minutes
+    random_offset_seconds = random.randint(0, lightweight_interval * 60)
+    
     project = Project(
         url=url_str,
         name=project_name,
         check_interval_hours=24,  # Start with daily checks
         next_check_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        next_lightweight_check_at=datetime.now(timezone.utc) + timedelta(seconds=random_offset_seconds),
     )
     await project_repo.save(project)
 
