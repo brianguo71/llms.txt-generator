@@ -6,7 +6,8 @@ Automatically generate and maintain [llms.txt](https://llmstxt.org/) files for w
 ## Features
 
 - **Automatic Generation**: Enter a URL and get a well-structured llms.txt file
-- **Intelligent Crawling**: Firecrawl-powered crawling with JS rendering and clean markdown extraction
+- **Dual Crawler Backends**: Choose between Firecrawl (managed API) or Scrapy (self-hosted) via config
+- **Intelligent Crawling**: JS rendering and clean markdown extraction
 - **LLM-Powered Curation**: Uses GPT-4o-mini to generate meaningful descriptions and categorizations
 - **Native Change Detection**: Automatic monitoring with adaptive scheduling (daily to weekly)
 - **Scalable Architecture**: Built with extensibility in mind
@@ -19,8 +20,8 @@ Automatically generate and maintain [llms.txt](https://llmstxt.org/) files for w
 | Backend | FastAPI (Python) |
 | Database | PostgreSQL |
 | Task Queue | Celery + Redis |
-| Web Crawling | [Firecrawl](https://firecrawl.dev) |
-| Change Detection | Celery Beat + Firecrawl |
+| Web Crawling | [Firecrawl](https://firecrawl.dev) or [Scrapy](https://scrapy.org) + Playwright |
+| Change Detection | Celery Beat + Crawler |
 
 ## Quick Start
 
@@ -44,7 +45,10 @@ cd llmstxt
 Create a `.env` file in the project root:
 
 ```env
-# Firecrawl (required for crawling)
+# Crawler backend: "firecrawl" (default) or "scrapy"
+CRAWLER_BACKEND=firecrawl
+
+# Firecrawl API key (required if using firecrawl backend)
 FIRECRAWL_API_KEY=fc-your-firecrawl-key
 
 # LLM API Keys (at least one required)
@@ -101,15 +105,33 @@ URL → Firecrawl API → Filter (LLM batch) → Curate (LLM) → Generate llms.
 3. **Curate**: LLM generates site overview, sections with prose descriptions, and page descriptions
 4. **Generate**: Assemble final llms.txt with Profound-style formatting
 
-### Why Firecrawl?
+### Crawler Backends
 
-| Feature | BS4 + Playwright | Firecrawl |
-|---------|----------------|-----------|
-| Code complexity | ~600 lines | ~160 lines |
-| JS rendering | Playwright container required | Built-in |
-| Anti-bot handling | Manual implementation | Automatic |
-| Rate limiting | Manual implementation | Automatic |
-| Content extraction | BeautifulSoup parsing | Clean markdown |
+The application supports two crawler backends, selectable via `CRAWLER_BACKEND` env var:
+
+#### Firecrawl (Default)
+
+Managed API service - simpler setup, pay-per-use.
+
+| Feature | Value |
+|---------|-------|
+| Setup | API key only |
+| JS rendering | Built-in |
+| Rate limiting | Automatic |
+| Cost | Pay per page crawled |
+
+#### Scrapy
+
+Self-hosted crawling with Playwright fallback for JS-heavy pages.
+
+| Feature | Value |
+|---------|-------|
+| Setup | No external API needed |
+| JS rendering | Automatic Playwright fallback |
+| Rate limiting | Configurable |
+| Cost | Free (self-hosted) |
+
+**Scrapy JS Detection**: The spider first tries standard HTTP requests. If the response has < 500 chars of text or contains "requires javascript" warnings, it automatically retries with Playwright.
 
 ### Change Detection
 
@@ -145,7 +167,8 @@ Once running, visit `/docs` for interactive API documentation.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `FIRECRAWL_API_KEY` | Firecrawl API key (required) | - |
+| `CRAWLER_BACKEND` | Crawler to use (`firecrawl` or `scrapy`) | `firecrawl` |
+| `FIRECRAWL_API_KEY` | Firecrawl API key (required for firecrawl backend) | - |
 | `OPENAI_API_KEY` | OpenAI API key | - |
 | `ANTHROPIC_API_KEY` | Anthropic API key | - |
 | `LLM_PROVIDER` | Which LLM to use (`openai` or `anthropic`) | `openai` |
