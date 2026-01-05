@@ -35,6 +35,9 @@ class Project(Base):
     next_lightweight_check_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    last_lightweight_rescrape_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )  # For cooldown tracking
 
     # Status
     status: Mapped[str] = mapped_column(String(50), default="pending")

@@ -7,7 +7,7 @@ The actual business logic lives in the services module.
 import hashlib
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from celery import shared_task
 from celery.exceptions import SoftTimeLimitExceeded
@@ -1104,15 +1104,35 @@ def lightweight_batch_check(project_id: str):
                             # Check if ETag or Last-Modified changed
                             new_etag = resp.headers.get("ETag")
                             new_last_modified = resp.headers.get("Last-Modified")
+                            new_content_length = resp.headers.get("Content-Length")
                             
-                            etag_changed = new_etag and new_etag != page.etag
-                            lm_changed = new_last_modified and new_last_modified != page.last_modified_header
+                            # Parse content length to int for comparison
+                            new_cl_int = int(new_content_length) if new_content_length else None
+                            
+                            # Only consider "changed" if we had prior values that differ
+                            etag_changed = page.etag and new_etag and new_etag != page.etag
+                            lm_changed = page.last_modified_header and new_last_modified and new_last_modified != page.last_modified_header
+                            
+                            # Option 1: Content-Length change detection
+                            cl_changed = page.content_length and new_cl_int and page.content_length != new_cl_int
+                            
+                            # First check after crawl: no prior tracking headers
+                            has_any_prior = page.etag or page.last_modified_header or page.content_length or page.sample_hash
+                            is_first_check = not has_any_prior
+                            
+                            # Detect if this site has NO tracking headers (needs sample fetch)
+                            has_no_headers = not new_etag and not new_last_modified and not new_content_length
+                            needs_sample_check = has_no_headers and not is_first_check and page.sample_hash
                             
                             return {
                                 "url": page.url,
-                                "changed": etag_changed or lm_changed or (not page.etag and not page.last_modified_header),
+                                "changed": etag_changed or lm_changed or cl_changed,
+                                "is_first_check": is_first_check,
+                                "needs_sample_check": needs_sample_check,
+                                "has_no_headers": has_no_headers,
                                 "new_etag": new_etag,
                                 "new_last_modified": new_last_modified,
+                                "new_content_length": new_cl_int,
                                 "page_id": str(page.id),
                             }
                         except Exception as e:
@@ -1123,15 +1143,110 @@ def lightweight_batch_check(project_id: str):
         
         results = asyncio.run(check_etags())
         
-        # Collect pages with changes
+        # Collect pages with changes vs first-time checks
         changed_results = [r for r in results if r.get("changed")]
+        first_check_results = [r for r in results if r.get("is_first_check") and not r.get("error")]
+        needs_sample_check = [r for r in results if r.get("needs_sample_check")]
         errors = [r for r in results if r.get("error")]
         
+        # Build lookup for updating ETags
+        pages_by_url = {p.url: p for p in pages}
+        
+        # For first-check pages, store all available headers and fetch sample hash if no headers
+        if first_check_results:
+            headerless_urls = [r["url"] for r in first_check_results if r.get("has_no_headers")]
+            
+            # Fetch semantic fingerprints for header-less pages (Option 2)
+            # Uses semantic extraction to ignore noisy elements like deploy hashes
+            sample_hashes = {}
+            if headerless_urls:
+                logger.info(f"Fetching semantic fingerprints for {len(headerless_urls)} header-less pages")
+                from app.services.semantic_extractor import extract_semantic_fingerprint
+                
+                async def fetch_samples():
+                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                        sem = asyncio.Semaphore(settings.lightweight_concurrent_requests)
+                        
+                        async def fetch_one(url):
+                            async with sem:
+                                try:
+                                    # Fetch full page for semantic extraction
+                                    resp = await client.get(url)
+                                    html = resp.text
+                                    # Extract semantic fingerprint (ignores scripts, styles, deploy hashes)
+                                    fingerprint = extract_semantic_fingerprint(html, max_content_length=10000)
+                                    return url, fingerprint
+                                except Exception as e:
+                                    logger.debug(f"Semantic fetch failed for {url}: {e}")
+                                    return url, None
+                        
+                        return await asyncio.gather(*[fetch_one(u) for u in headerless_urls])
+                
+                sample_results = asyncio.run(fetch_samples())
+                sample_hashes = {url: h for url, h in sample_results if h}
+            
+            logger.info(f"First lightweight check for {len(first_check_results)} pages - storing tracking data")
+            for result in first_check_results:
+                page = pages_by_url.get(result["url"])
+                if page:
+                    if result.get("new_etag"):
+                        page.etag = result["new_etag"]
+                    if result.get("new_last_modified"):
+                        page.last_modified_header = result["new_last_modified"]
+                    if result.get("new_content_length"):
+                        page.content_length = result["new_content_length"]
+                    # Store sample hash for header-less pages
+                    if result["url"] in sample_hashes:
+                        page.sample_hash = sample_hashes[result["url"]]
+            session.commit()
+        
+        # Option 2: Check semantic fingerprints for header-less sites (subsequent checks)
+        if needs_sample_check and not changed_results:
+            logger.info(f"Checking {len(needs_sample_check)} header-less pages via semantic fingerprint")
+            from app.services.semantic_extractor import extract_semantic_fingerprint
+            
+            async def check_sample_hashes():
+                async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                    sem = asyncio.Semaphore(settings.lightweight_concurrent_requests)
+                    
+                    async def check_one(result):
+                        async with sem:
+                            try:
+                                page = pages_by_url.get(result["url"])
+                                if not page or not page.sample_hash:
+                                    return {"url": result["url"], "changed": False}
+                                
+                                # Fetch full page for semantic extraction
+                                resp = await client.get(result["url"])
+                                html = resp.text
+                                # Extract semantic fingerprint (ignores scripts, styles, deploy hashes)
+                                new_hash = extract_semantic_fingerprint(html, max_content_length=10000)
+                                
+                                return {
+                                    "url": result["url"],
+                                    "changed": new_hash != page.sample_hash,
+                                    "new_sample_hash": new_hash,
+                                }
+                            except Exception as e:
+                                logger.debug(f"Semantic check failed for {result['url']}: {e}")
+                                return {"url": result["url"], "changed": False, "error": str(e)}
+                    
+                    return await asyncio.gather(*[check_one(r) for r in needs_sample_check])
+            
+            sample_results = asyncio.run(check_sample_hashes())
+            sample_changed = [r for r in sample_results if r.get("changed")]
+            
+            if sample_changed:
+                logger.info(f"{len(sample_changed)} header-less pages changed via semantic fingerprint")
+                changed_results.extend(sample_changed)
+        
         if not changed_results:
-            logger.debug(f"No changes detected for {project.url}")
+            logger.info(f"No changes detected for {project.url} (first_checks: {len(first_check_results)}, sample_checks: {len(needs_sample_check)})")
             return {
                 "changed": False,
                 "pages_checked": len(pages),
+                "first_checks": len(first_check_results),
+                "sample_checks": len(needs_sample_check),
                 "errors": len(errors),
             }
         
@@ -1141,13 +1256,14 @@ def lightweight_batch_check(project_id: str):
         change_ratio = len(changed_results) / len(pages)
         if change_ratio > settings.lightweight_change_threshold_percent / 100:
             logger.info(f"Bulk change ({change_ratio:.0%}) for {project.url}, triggering rescrape")
-            _trigger_lightweight_rescrape(session, project)
+            trigger_result = _trigger_lightweight_rescrape(session, project)
             session.commit()
-            return {"significant": True, "reason": "bulk_change", "rescrape_triggered": True}
+            if trigger_result.get("triggered"):
+                return {"significant": True, "reason": "bulk_change", "rescrape_triggered": True}
+            else:
+                return {"significant": True, "reason": "bulk_change", "rescrape_skipped": True, "skip_reason": trigger_result.get("reason")}
         
         # Fetch HTML for changed pages and compare to baseline
-        pages_by_url = {p.url: p for p in pages}
-        
         async def fetch_changed():
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 semaphore = asyncio.Semaphore(settings.lightweight_concurrent_requests)
@@ -1188,14 +1304,23 @@ def lightweight_batch_check(project_id: str):
         
         if significance["significant"]:
             logger.info(f"Significant drift for {project.url} (score={significance['score']}, reason={significance['reason']})")
-            _trigger_lightweight_rescrape(session, project)
+            trigger_result = _trigger_lightweight_rescrape(session, project)
             session.commit()
-            return {
-                "significant": True,
-                "score": significance["score"],
-                "reason": significance["reason"],
-                "rescrape_triggered": True,
-            }
+            if trigger_result.get("triggered"):
+                return {
+                    "significant": True,
+                    "score": significance["score"],
+                    "reason": significance["reason"],
+                    "rescrape_triggered": True,
+                }
+            else:
+                return {
+                    "significant": True,
+                    "score": significance["score"],
+                    "reason": significance["reason"],
+                    "rescrape_skipped": True,
+                    "skip_reason": trigger_result.get("reason"),
+                }
         else:
             # Update ETags only (keep baseline unchanged for cumulative detection)
             logger.debug(f"Non-significant changes for {project.url} (score={significance['score']}), updating ETags")
@@ -1223,15 +1348,43 @@ def lightweight_batch_check(project_id: str):
         session.close()
 
 
-def _trigger_lightweight_rescrape(session, project: Project):
-    """Trigger a full rescrape from lightweight change detection."""
+def _trigger_lightweight_rescrape(session, project: Project) -> dict:
+    """Trigger a full rescrape from lightweight change detection.
+    
+    Respects cooldown period to prevent over-triggering on frequently
+    changing pages or false positives.
+    
+    Returns:
+        dict with 'triggered' bool and 'reason' if skipped
+    """
+    # Check cooldown period
+    cooldown_hours = settings.full_rescrape_cooldown_hours
+    if project.last_lightweight_rescrape_at:
+        cooldown = timedelta(hours=cooldown_hours)
+        time_since_last = datetime.now(timezone.utc) - project.last_lightweight_rescrape_at
+        if time_since_last < cooldown:
+            remaining = cooldown - time_since_last
+            logger.info(
+                f"Skipping rescrape for {project.url} - within {cooldown_hours}h cooldown "
+                f"({remaining.total_seconds() / 3600:.1f}h remaining)"
+            )
+            return {"triggered": False, "reason": "cooldown", "remaining_hours": remaining.total_seconds() / 3600}
+    
+    # Trigger the rescrape
     job = CrawlJob(project_id=project.id, trigger_reason="lightweight_change_detected")
     session.add(job)
     session.flush()  # Get job ID
     
+    now = datetime.now(timezone.utc)
     project.status = "pending"  # Will be set to crawling by initial_crawl
+    project.last_lightweight_rescrape_at = now
     
-    logger.info(f"Triggering rescrape for {project.url} due to lightweight change detection")
+    # Reset the 24h scheduled rescrape timer since we're doing a rescrape now
+    project.next_check_at = now + timedelta(hours=project.check_interval_hours or 24)
+    
+    logger.info(f"Triggering rescrape for {project.url} due to lightweight change detection (next scheduled check reset to {project.next_check_at})")
     
     # Dispatch async
     initial_crawl.delay(str(project.id), str(job.id))
+    
+    return {"triggered": True}
