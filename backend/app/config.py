@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     
     # Firecrawl API
     firecrawl_api_key: str | None = None
+    firecrawl_wait_for_ms: int = 3000  # Wait time in ms for JS rendering (essential for SPAs)
 
     # Change detection (full rescrape)
     default_check_interval_hours: int = 24

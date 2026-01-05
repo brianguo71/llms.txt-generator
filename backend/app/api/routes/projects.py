@@ -136,6 +136,10 @@ async def create_project(
     )
     await job_repo.save(crawl_job)
 
+    # IMPORTANT: Commit before dispatching Celery task to avoid race condition
+    # The task might run before the implicit commit at end of request
+    await db.commit()
+
     # Trigger async crawl
     task = initial_crawl.delay(project.id, crawl_job.id)
     crawl_job.celery_task_id = task.id

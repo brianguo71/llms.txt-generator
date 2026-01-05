@@ -214,24 +214,39 @@ class LLMCurator:
         
         data = self._parse_json(response)
         
-        # Parse sections from new schema
+        # Build set of valid URLs from the provided pages
+        valid_urls = {p.get("url", "").rstrip("/").lower() for p in pages}
+        
+        def is_valid_url(url: str) -> bool:
+            """Check if URL was in the crawled pages (not hallucinated)."""
+            normalized = url.rstrip("/").lower()
+            return normalized in valid_urls
+        
+        # Parse sections from new schema, filtering out hallucinated URLs
         sections = []
         for section_data in data.get("sections", []):
-            section_pages = [
-                CuratedPageData(
-                    url=p.get("url", ""),
-                    title=p.get("title", ""),
-                    description=p.get("description", ""),
-                    category=section_data.get("name", "Other"),
-                )
-                for p in section_data.get("pages", [])
-            ]
+            section_pages = []
+            for p in section_data.get("pages", []):
+                url = p.get("url", "")
+                if is_valid_url(url):
+                    section_pages.append(CuratedPageData(
+                        url=url,
+                        title=p.get("title", ""),
+                        description=p.get("description", ""),
+                        category=section_data.get("name", "Other"),
+                    ))
+                else:
+                    logger.warning(f"Filtered hallucinated URL: {url}")
             
-            sections.append(SectionData(
-                name=section_data.get("name", ""),
-                description=section_data.get("description", ""),
-                pages=section_pages,
-            ))
+            # Only add section if it has valid pages
+            if section_pages:
+                sections.append(SectionData(
+                    name=section_data.get("name", ""),
+                    description=section_data.get("description", ""),
+                    pages=section_pages,
+                ))
+            else:
+                logger.warning(f"Skipping section '{section_data.get('name')}' - no valid pages")
         
         return FullCurationResult(
             site_title=data.get("site_title", ""),
@@ -323,6 +338,24 @@ class LLMCurator:
             filtered_pages.insert(0, homepage)
         
         total_input = len(non_homepage_pages) + (1 if homepage else 0)
+        
+        # Fallback: if filter was too aggressive (< 3 pages), include some extra pages
+        # This ensures the LLM has enough context to understand the site
+        min_pages_for_context = 5
+        if len(filtered_pages) < min_pages_for_context and len(non_homepage_pages) > 0:
+            logger.warning(
+                f"Filter too aggressive: only {len(filtered_pages)} pages kept. "
+                f"Adding sample pages for context."
+            )
+            # Add first few non-homepage pages that aren't already included
+            existing_urls = {p.get("url") for p in filtered_pages}
+            for page in non_homepage_pages:
+                if page.get("url") not in existing_urls:
+                    filtered_pages.append(page)
+                    if len(filtered_pages) >= min_pages_for_context:
+                        break
+            logger.info(f"After fallback: {len(filtered_pages)} pages for context")
+        
         logger.info(f"Filtering complete: {len(filtered_pages)}/{total_input} pages relevant (homepage always included)")
         
         return filtered_pages

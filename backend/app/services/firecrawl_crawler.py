@@ -31,6 +31,7 @@ class FirecrawlCrawler:
         
         self.client = Firecrawl(api_key=settings.firecrawl_api_key)
         self.max_pages = settings.max_pages_per_crawl
+        self.wait_for_ms = settings.firecrawl_wait_for_ms
         self.on_progress = on_progress
 
     def _report_progress(self, crawled: int, total: int, url: str) -> None:
@@ -62,6 +63,9 @@ class FirecrawlCrawler:
                 scrape_options=ScrapeOptions(
                     formats=["markdown"],
                     only_main_content=True,
+                    # Wait for JavaScript to render before capturing content
+                    # Essential for JS-heavy pages like SPAs
+                    wait_for=self.wait_for_ms,
                 ),
                 poll_interval=5,  # Check status every 5 seconds internally
             )
@@ -124,6 +128,8 @@ class FirecrawlCrawler:
                 url=url,
                 formats=["markdown"],
                 only_main_content=True,
+                # Wait for JavaScript to render before capturing content
+                wait_for=self.wait_for_ms,
             )
             
             markdown = doc.markdown or ""

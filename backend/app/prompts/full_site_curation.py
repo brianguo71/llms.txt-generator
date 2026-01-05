@@ -56,15 +56,15 @@ Return ONLY a valid JSON object with this exact structure:
 {{
   "site_title": "Company/Product Name",
   "tagline": "One impactful sentence describing core value proposition (10-25 words)",
-  "overview": "Multi-paragraph overview describing the company/product, its mission, target audience, and primary capabilities. Length scales with content depth.",
+  "overview": "Paragraph overview describing the company/product, its mission, target audience, and primary capabilities. Length scales with content depth.",
   "sections": [
     {{
       "name": "Platform Features",
       "description": "Prose description (50-300 words) explaining this area. Describe what the features are, how they work, their benefits, and who they're for. Use bullet points within the prose where appropriate to highlight key aspects.",
       "pages": [
         {{
-          "url": "https://example.com/features",
-          "title": "Features Overview",
+          "url": "<URL from crawled pages above>",
+          "title": "Page title from crawled content",
           "description": "One sentence describing this page"
         }}
       ]
@@ -74,8 +74,8 @@ Return ONLY a valid JSON object with this exact structure:
       "description": "Description of the resources available, what users can learn, and how they help.",
       "pages": [
         {{
-          "url": "https://example.com/docs",
-          "title": "Documentation",
+          "url": "<URL from crawled pages above>",
+          "title": "Page title from crawled content",
           "description": "Technical documentation and API reference"
         }}
       ]
@@ -123,5 +123,6 @@ If a site is not a typical company/product site (e.g., a blog, quote collection,
 
 - Return ONLY valid JSON, no markdown code fences, no explanation
 - The JSON must be parseable by Python's json.loads()
-- Scale output length proportionally to input content depth"""
+- Scale output length proportionally to input content depth
+- **CRITICAL: Only use URLs from the crawled pages listed above. NEVER invent or hallucinate URLs. Each URL in the output MUST appear in the "Pages Crawled" section. Do not use example.com or any placeholder URLs.**"""
 
