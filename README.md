@@ -246,9 +246,9 @@ llmstxt/
 
 1. Create a new Railway project
 2. Add PostgreSQL and Redis addons
-3. Deploy the `backend` directory
+3. Deploy the `backend` directory (This is your API service)
 4. Add a worker service:
-   - Deploy another instance of `backend` directory
+   - Deploy `backend` directory again
    - Add start command: `celery -A app.workers.celery_app worker --beat --loglevel=info`
 5. Set required environment variables:
    - `DATABASE_URL` (from Railway PostgreSQL)
