@@ -230,7 +230,7 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
     4. Assembles and saves llms.txt in Profound style
     5. Updates project status to 'ready'
     """
-    from app.services.crawler import CrawlerService
+    from app.services.crawler_factory import get_crawler_service
     from app.services.llm_curator import LLMCurator
     from app.services.progress import get_progress_service
 
@@ -291,7 +291,7 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
             )
 
         # Perform crawl
-        crawler = CrawlerService(settings, on_progress=on_crawl_progress)
+        crawler = get_crawler_service(settings, on_progress=on_crawl_progress)
         pages_data = crawler.crawl_website(project.url)
         crawl_elapsed = time.time() - crawl_start
         
@@ -432,7 +432,7 @@ def targeted_recrawl(self, project_id: str, changed_urls: list[str]) -> dict:
     5. Regenerates overview if >50% of pages changed or new section created
     6. Assembles llms.txt from stored curated data
     """
-    from app.services.crawler import CrawlerService
+    from app.services.crawler_factory import get_crawler_service
     from app.services.llm_curator import LLMCurator, CuratedPageData, SectionData
 
     session = SyncSessionLocal()
@@ -474,7 +474,7 @@ def targeted_recrawl(self, project_id: str, changed_urls: list[str]) -> dict:
             return initial_crawl(project_id, crawl_job.id)
 
         # Re-crawl changed pages and extract links
-        crawler = CrawlerService(settings)
+        crawler = get_crawler_service(settings)
         curator = LLMCurator(settings)
         
         actually_changed_pages = []
@@ -820,7 +820,7 @@ def check_single_project(project_id: str):
     - Significant change: reset to daily checks
     """
     from datetime import timedelta
-    from app.services.crawler import CrawlerService
+    from app.services.crawler_factory import get_crawler_service
     from app.services.llm_curator import LLMCurator
     
     session = SyncSessionLocal()
@@ -837,8 +837,8 @@ def check_single_project(project_id: str):
         
         logger.info(f"Checking {project.url} for changes (interval: {project.check_interval_hours}h)")
         
-        # 1. Scrape homepage with Firecrawl (1 credit)
-        crawler = CrawlerService(settings)
+        # 1. Scrape homepage
+        crawler = get_crawler_service(settings)
         page_data = crawler.crawl_page(project.url)
         
         if not page_data:

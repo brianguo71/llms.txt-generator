@@ -36,6 +36,7 @@ class Settings(BaseSettings):
 
     # Crawler settings
     max_pages_per_crawl: int = 100  # Maximum pages to crawl per site
+    crawler_backend: Literal["firecrawl", "scrapy"] = "firecrawl"
     
     # Firecrawl API
     firecrawl_api_key: str | None = None

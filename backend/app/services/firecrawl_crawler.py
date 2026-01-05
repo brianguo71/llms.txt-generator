@@ -12,7 +12,7 @@ from app.config import Settings
 logger = logging.getLogger(__name__)
 
 
-class CrawlerService:
+class FirecrawlCrawler:
     """Crawl websites using Firecrawl API for content extraction."""
 
     def __init__(
@@ -155,3 +155,4 @@ class CrawlerService:
             return f"{parsed.scheme}://{parsed.netloc}{path}".lower()
         
         return normalize(url) == normalize(start_url)
+
