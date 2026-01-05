@@ -41,10 +41,20 @@ class Settings(BaseSettings):
     # Firecrawl API
     firecrawl_api_key: str | None = None
 
-    # Change detection
+    # Change detection (full rescrape)
     default_check_interval_hours: int = 24
     min_check_interval_hours: int = 6
     max_check_interval_days: int = 7
+    full_rescrape_interval_hours: int = 24
+    full_rescrape_backoff_enabled: bool = True
+
+    # Lightweight change detection
+    lightweight_check_enabled: bool = True
+    lightweight_check_interval_minutes: int = 5  # Check each project every 5 min
+    lightweight_concurrent_requests: int = 20  # Max concurrent HEAD requests per project
+    lightweight_request_delay_ms: int = 50  # Delay between requests (politeness)
+    lightweight_change_threshold_percent: int = 20  # % of pages with ETag changes to auto-trigger rescrape
+    lightweight_significance_threshold: int = 30  # Heuristic score threshold for cumulative drift
 
     # Task queue backend (for future extensibility)
     task_queue_backend: Literal["celery", "sqs"] = "celery"
