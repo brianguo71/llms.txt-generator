@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     lightweight_check_interval_minutes: int = 5  # Check each project every 5 min
     lightweight_concurrent_requests: int = 20  # Max concurrent HEAD requests per project
     lightweight_request_delay_ms: int = 50  # Delay between requests (politeness)
-    lightweight_change_threshold_percent: int = 20  # % of pages with ETag changes to auto-trigger rescrape
+    lightweight_change_threshold_percent: int = 1  # % of pages with ETag changes to auto-trigger rescrape
     lightweight_significance_threshold: int = 30  # Heuristic score threshold for cumulative drift
     full_rescrape_cooldown_hours: int = 2  # Min hours between lightweight-triggered rescrapes
 
