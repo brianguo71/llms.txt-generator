@@ -14,6 +14,7 @@ from app.repositories import (
     PostgresCrawlJobRepository,
     PostgresProjectRepository,
 )
+from app.services.scheduler import get_scheduler
 from app.services.url_validator import URLValidator
 from app.workers.tasks import initial_crawl
 
@@ -112,16 +113,9 @@ async def create_project(
     # Create project with native change detection
     project_name = request.name or validation.title or url_str
     
-    # Stagger lightweight checks: random offset within interval to spread load
-    lightweight_interval = settings.lightweight_check_interval_minutes
-    random_offset_seconds = random.randint(0, lightweight_interval * 60)
-    
     project = Project(
         url=url_str,
         name=project_name,
-        check_interval_hours=24,  # Start with daily checks
-        next_check_at=datetime.now(timezone.utc) + timedelta(hours=24),
-        next_lightweight_check_at=datetime.now(timezone.utc) + timedelta(seconds=random_offset_seconds),
     )
     await project_repo.save(project)
 
@@ -135,6 +129,13 @@ async def create_project(
     # IMPORTANT: Commit before dispatching Celery task to avoid race condition
     # The task might run before the implicit commit at end of request
     await db.commit()
+
+    # Schedule project checks via Redis (with random stagger for lightweight)
+    scheduler = get_scheduler()
+    lightweight_interval = settings.lightweight_check_interval_minutes
+    random_offset_minutes = random.randint(0, lightweight_interval)
+    scheduler.schedule_full_check(project.id, interval_hours=24)
+    scheduler.schedule_lightweight_check(project.id, interval_minutes=random_offset_minutes)
 
     # Trigger async crawl
     task = initial_crawl.delay(project.id, crawl_job.id)
@@ -251,6 +252,11 @@ async def recrawl_project(
     project.status = "pending"
     await project_repo.save(project)
 
+    # Cancel scheduled checks while manual rescrape is in progress
+    scheduler = get_scheduler()
+    scheduler.cancel_full_check(project.id)
+    scheduler.cancel_lightweight_check(project.id)
+
     # Create new crawl job
     crawl_job = CrawlJob(
         project_id=project.id,
@@ -289,6 +295,10 @@ async def delete_project(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
+
+    # Remove from all schedules
+    scheduler = get_scheduler()
+    scheduler.unschedule_project(project_id)
 
     await project_repo.delete(project_id)
 
