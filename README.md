@@ -200,11 +200,12 @@ Faster, cheaper checks to verify existing served links (curated sites) still exi
 When lightweight checks detect significant changes, or on the configured schedule:
 
 1. **Full crawl**: Re-crawls the entire site using Scrapy
-2. **LLM curation**: Regenerates page descriptions and categories
-3. **Adaptive backoff**: 
-   - No changes: doubles interval (24h → 48h → 96h → 168h max)
+2. **LLM curation**: With LLM calls, determine if new changes are significant enough to warrant llms.txt updates
+3. **Section-based Recreation**: Only recreate/update sections with pages that have significant changes
+4. **Adaptive backoff**: 
+   - No changes: doubles interval (by default: 24h → 48h → 96h → 168h max)
    - Significant changes: resets to daily
-
+  
 
 ## API Documentation
 
