@@ -1806,6 +1806,8 @@ def lightweight_batch_check(project_id: str):
         ).all()
         
         if not curated_pages:
+            # Still reschedule even if no curated pages (project may get curated later)
+            scheduler.schedule_lightweight_check(project_id)
             return {"skipped": True, "reason": "no_curated_pages"}
         
         logger.info(f"Lightweight check for {project.url}: {len(curated_pages)} curated pages")
@@ -1883,6 +1885,8 @@ def lightweight_batch_check(project_id: str):
         # No changes detected
         if not changed_results:
             logger.info(f"No changes detected for {project.url} (checked: {len(curated_pages)}, first_checks: {len(first_check_results)}, errors: {len(errors)})")
+            # Re-schedule next lightweight check
+            scheduler.schedule_lightweight_check(project_id)
             return {
                 "changed": False,
                 "pages_checked": len(curated_pages),
@@ -1932,6 +1936,8 @@ def lightweight_batch_check(project_id: str):
         if not fetched_pages:
             logger.info(f"No fetched pages to analyze for {project.url}")
             session.commit()
+            # Re-schedule next lightweight check
+            scheduler.schedule_lightweight_check(project_id)
             return {"changed": True, "pages_changed": len(changed_results), "no_analysis": True}
         
         # Analyze significance
