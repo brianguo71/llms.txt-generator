@@ -66,6 +66,8 @@ class FirecrawlCrawler:
                     # Wait for JavaScript to render before capturing content
                     # Essential for JS-heavy pages like SPAs
                     wait_for=self.wait_for_ms,
+                    # Bypass Firecrawl's cache to get fresh content
+                    max_age=0,
                 ),
                 poll_interval=5,  # Check status every 5 seconds internally
             )
@@ -209,6 +211,8 @@ class FirecrawlCrawler:
                 formats=["markdown"],
                 only_main_content=True,
                 wait_for=self.wait_for_ms,
+                # Bypass Firecrawl's cache to get fresh content
+                max_age=0,
             )
             
             pages = []
