@@ -32,10 +32,9 @@ class CrawlJob(Base):
     )  # pending, running, completed, failed
     trigger_reason: Mapped[str] = mapped_column(
         String(100), default="initial"
-    )  # initial, scheduled, manual, webhook
+    )  # initial, scheduled_check, manual, lightweight_change_detected
 
     # Progress tracking
-    pages_discovered: Mapped[int] = mapped_column(Integer, default=0)
     pages_crawled: Mapped[int] = mapped_column(Integer, default=0)
     pages_changed: Mapped[int] = mapped_column(Integer, default=0)
 

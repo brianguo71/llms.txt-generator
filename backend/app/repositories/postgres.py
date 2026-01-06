@@ -82,14 +82,22 @@ class PostgresPageRepository:
         result = await self.session.execute(
             select(Page)
             .where(Page.project_id == project_id, Page.version == version)
-            .order_by(Page.depth.asc(), Page.url.asc())
+            .order_by(Page.url.asc())
         )
         return list(result.scalars().all())
 
     async def get_fingerprints(self, project_id: str) -> dict[str, dict]:
         """Get fingerprint data for latest version pages in a project."""
         pages = await self.get_by_project(project_id)
-        return {page.url: page.to_fingerprint_dict() for page in pages}
+        return {
+            page.url: {
+                "etag": page.etag,
+                "last_modified_header": page.last_modified_header,
+                "content_hash": page.content_hash,
+                "sample_hash": page.sample_hash,
+            }
+            for page in pages
+        }
 
     async def save(self, page: Page) -> Page:
         """Save a single page."""

@@ -1,9 +1,9 @@
 """Project model for tracked websites."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Integer, String
+from sqlalchemy import DateTime, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -11,7 +11,11 @@ from app.database import Base
 
 
 class Project(Base):
-    """A website being tracked for llms.txt generation."""
+    """A website being tracked for llms.txt generation.
+    
+    Note: Scheduling (check intervals, next check times, cooldowns) is now
+    managed via Redis sorted sets in app.services.scheduler.
+    """
 
     __tablename__ = "projects"
 
@@ -22,22 +26,6 @@ class Project(Base):
     )
     url: Mapped[str] = mapped_column(String(2048), unique=True)
     name: Mapped[str] = mapped_column(String(255))
-    sitemap_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
-
-    # Native change detection settings (full rescrape)
-    check_interval_hours: Mapped[int] = mapped_column(Integer, default=24)
-    next_check_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    homepage_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
-    # Lightweight change detection (staggered scheduling)
-    next_lightweight_check_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_lightweight_rescrape_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )  # For cooldown tracking
 
     # Status
     status: Mapped[str] = mapped_column(String(50), default="pending")

@@ -1075,13 +1075,9 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
         new_version = max_version + 1
 
         for page_data in pages_data:
-            # Store markdown content in first_paragraph field for backwards compatibility
+            # Store markdown content in first_paragraph field for LLM context
             markdown = page_data.get("markdown", "")
             first_para = markdown[:2000] if markdown else page_data.get("first_paragraph")
-            
-            # Compute baseline hash for lightweight change detection
-            content_for_hash = markdown or first_para or ""
-            baseline_hash = hashlib.sha256(content_for_hash.encode()).hexdigest() if content_for_hash else None
             
             page = Page(
                 project_id=project.id,
@@ -1090,10 +1086,8 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
                 description=page_data.get("description"),
                 first_paragraph=first_para,
                 content_hash=page_data.get("content_hash"),
-                baseline_html_hash=baseline_hash,  # Set baseline for lightweight checks
-                depth=page_data.get("depth", 0),
                 version=new_version,
-                # Clear ETag so first lightweight check fetches fresh headers
+                # Clear fingerprints so first lightweight check fetches fresh headers
                 etag=None,
                 last_modified_header=None,
             )
@@ -1200,17 +1194,14 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
         project.status = "ready"
         project.last_checked_at = datetime.now(timezone.utc)
         
+        # Schedule next checks via Redis
+        new_interval = _schedule_next_check_redis(str(project.id), changed=content_changed)
+        
         if trigger_reason in ("scheduled_check", "lightweight_change_detected"):
-            # Apply backoff based on whether changes were significant
-            _schedule_next_check(project, changed=content_changed)
-            
             if content_changed:
-                logger.info(f"Significant changes for {project.url}, resetting to daily checks")
+                logger.info(f"Significant changes for {project.url}, resetting to {new_interval}h checks")
             else:
-                logger.info(f"No significant changes for {project.url}, applying backoff")
-            
-            # Clear the temporary hash storage
-            project.homepage_content_hash = None
+                logger.info(f"No significant changes for {project.url}, backoff to {new_interval}h")
         
         total_elapsed = time.time() - start_time
         
@@ -1390,7 +1381,6 @@ def targeted_recrawl(self, project_id: str, changed_urls: list[str]) -> dict:
                     h2s=page_data.get("h2s"),
                     first_paragraph=page_data.get("first_paragraph"),
                     content_hash=page_data.get("content_hash"),
-                    depth=page_data.get("depth", 0),
                     version=max_version,
                 )
                 session.add(page)
@@ -1607,54 +1597,34 @@ def targeted_recrawl(self, project_id: str, changed_urls: list[str]) -> dict:
 
 
 # =============================================================================
-# Native Change Detection Tasks
+# Native Change Detection Tasks (Redis Scheduler)
 # =============================================================================
 
-# Backoff constants
-MIN_CHECK_INTERVAL = 24   # hours (daily)
-MAX_CHECK_INTERVAL = 168  # hours (weekly)
+from app.services.scheduler import get_scheduler
 
 
 @celery_app.task
 def check_projects_for_changes():
-    """Periodic task: find and dispatch checks for all due projects.
+    """Periodic task: dispatch full checks for all due projects.
     
-    This task runs every hour via Celery Beat and finds projects
-    that are due for a change check based on their next_check_at time.
+    This task runs every hour via Celery Beat. Uses Redis sorted sets
+    for O(log N) scheduling instead of database polling.
     """
-    from datetime import timedelta
+    scheduler = get_scheduler()
     
-    session = SyncSessionLocal()
-    try:
-        now = datetime.now(timezone.utc)
-        
-        # Find projects due for checking
-        due_projects = session.query(Project).filter(
-            Project.status == "ready",
-            (Project.next_check_at <= now) | (Project.next_check_at.is_(None))
-        ).all()
-        
-        logger.info(f"Found {len(due_projects)} projects due for change check")
-        
-        for project in due_projects:
-            # Dispatch individual check task
-            check_single_project.delay(str(project.id))
-            
-            # Immediately update next_check_at to prevent duplicate dispatches
-            # The actual next check time will be recalculated after the check completes
-            project.next_check_at = now + timedelta(hours=project.check_interval_hours)
-        
-        session.commit()
-        
-        return {"projects_dispatched": len(due_projects)}
-        
-    except Exception as e:
-        session.rollback()
-        logger.error(f"check_projects_for_changes failed: {e}")
-        return {"error": str(e)}
-        
-    finally:
-        session.close()
+    # Atomically get and remove due projects from Redis
+    due_project_ids = scheduler.get_due_full_checks(limit=100)
+    
+    if not due_project_ids:
+        return {"projects_dispatched": 0}
+    
+    logger.info(f"Found {len(due_project_ids)} projects due for full check")
+    
+    # Dispatch individual check tasks
+    for project_id in due_project_ids:
+        check_single_project.delay(project_id)
+    
+    return {"projects_dispatched": len(due_project_ids)}
 
 
 @celery_app.task(soft_time_limit=30, time_limit=60)
@@ -1667,8 +1637,7 @@ def check_single_project(project_id: str):
     
     Backoff is applied AFTER the recrawl completes (in initial_crawl).
     """
-    from datetime import timedelta
-    
+    scheduler = get_scheduler()
     session = SyncSessionLocal()
     
     try:
@@ -1679,21 +1648,11 @@ def check_single_project(project_id: str):
         
         if project.status != "ready":
             logger.info(f"Project {project_id} not ready (status={project.status}), skipping")
+            # Re-schedule for next interval
+            scheduler.schedule_full_check(project_id)
             return {"skipped": True, "reason": f"Status is {project.status}"}
         
         logger.info(f"Scheduled check for {project.url} - triggering full recrawl")
-        
-        # Store current llms.txt hash for comparison after recrawl
-        current_llms_hash = None
-        current_file = session.query(GeneratedFile).filter(
-            GeneratedFile.project_id == project_id
-        ).first()
-        
-        if current_file:
-            import hashlib
-            current_llms_hash = hashlib.sha256(
-                current_file.content.encode('utf-8')
-            ).hexdigest()
         
         # Create crawl job with scheduled trigger reason
         job = CrawlJob(
@@ -1703,10 +1662,7 @@ def check_single_project(project_id: str):
         session.add(job)
         session.flush()
         
-        # Store the pre-recrawl hash in job metadata for comparison
-        # We'll use a simple approach: store it in the session and check after
         project.status = "pending"
-        project.homepage_content_hash = current_llms_hash  # Temporarily store for comparison
         session.commit()
         
         # Dispatch full recrawl
@@ -1720,86 +1676,73 @@ def check_single_project(project_id: str):
     except Exception as e:
         session.rollback()
         logger.error(f"check_single_project failed for {project_id}: {e}")
+        # Re-schedule on failure
+        scheduler.schedule_full_check(project_id)
         return {"error": str(e)}
         
     finally:
         session.close()
 
 
-def _schedule_next_check(project: Project, changed: bool) -> None:
-    """Calculate and set next check time with adaptive backoff.
+def _schedule_next_check_redis(project_id: str, changed: bool) -> int:
+    """Schedule next check using Redis with adaptive backoff.
     
     Args:
-        project: The project to update
+        project_id: The project ID to schedule
         changed: Whether significant changes were detected
+        
+    Returns:
+        The new interval in hours
     """
-    from datetime import timedelta
+    scheduler = get_scheduler()
     
-    now = datetime.now(timezone.utc)
+    # Apply backoff and get new interval
+    new_interval = scheduler.apply_backoff(project_id, changed)
     
-    if changed:
-        # Reset to daily checks
-        project.check_interval_hours = MIN_CHECK_INTERVAL
-    else:
-        # Double interval, cap at weekly
-        new_interval = min(project.check_interval_hours * 2, MAX_CHECK_INTERVAL)
-        project.check_interval_hours = new_interval
+    # Schedule next full check
+    scheduler.schedule_full_check(project_id, interval_hours=new_interval)
     
-    project.next_check_at = now + timedelta(hours=project.check_interval_hours)
+    # Also schedule next lightweight check
+    scheduler.schedule_lightweight_check(project_id)
     
-    logger.info(f"Scheduled next check for {project.url} in {project.check_interval_hours}h")
+    return new_interval
 
 
 # =============================================================================
-# Lightweight Change Detection Tasks
+# Lightweight Change Detection Tasks (Redis Scheduler)
 # =============================================================================
 
 @celery_app.task
 def dispatch_lightweight_checks():
     """Dispatch lightweight checks for projects that are due.
     
-    Runs every minute via Celery Beat. Projects are staggered so that
-    each project is checked once per LIGHTWEIGHT_CHECK_INTERVAL_MINUTES.
+    Runs every minute via Celery Beat. Uses Redis sorted sets
+    for O(log N) scheduling instead of database polling.
     
     Example: 10,000 projects with 5 min interval = ~2,000 dispatched per minute
     """
-    from datetime import timedelta
-    
     if not settings.lightweight_check_enabled:
         return {"skipped": True, "reason": "disabled"}
     
-    session = SyncSessionLocal()
-    try:
-        now = datetime.now(timezone.utc)
-        interval = timedelta(minutes=settings.lightweight_check_interval_minutes)
-        
-        # Find projects due for lightweight check
-        due_projects = session.query(Project).filter(
-            Project.status == "ready",
-            (Project.next_lightweight_check_at <= now) | (Project.next_lightweight_check_at.is_(None))
-        ).all()
-        
-        dispatched = 0
-        for project in due_projects:
-            # Dispatch the check
-            lightweight_batch_check.delay(str(project.id))
-            
-            # Schedule next check (staggered)
-            project.next_lightweight_check_at = now + interval
-            dispatched += 1
-        
-        session.commit()
-        
-        if dispatched > 0:
-            logger.info(f"Dispatched {dispatched} lightweight checks")
-        return {"dispatched": dispatched, "interval_minutes": settings.lightweight_check_interval_minutes}
+    scheduler = get_scheduler()
     
-    except Exception as e:
-        session.rollback()
-        logger.error(f"dispatch_lightweight_checks failed: {e}")
-        return {"error": str(e)}
-    finally:
-        session.close()
+    # Atomically get and remove due projects from Redis
+    due_project_ids = scheduler.get_due_lightweight_checks(limit=500)
+    
+    if not due_project_ids:
+        return {"dispatched": 0}
+    
+    # Dispatch lightweight checks
+    for project_id in due_project_ids:
+        lightweight_batch_check.delay(project_id)
+    
+    if len(due_project_ids) > 0:
+        logger.info(f"Dispatched {len(due_project_ids)} lightweight checks")
+    
+    return {
+        "dispatched": len(due_project_ids),
+        "interval_minutes": settings.lightweight_check_interval_minutes,
+    }
 
 
 @celery_app.task(soft_time_limit=120, time_limit=150)
@@ -1815,16 +1758,21 @@ def lightweight_batch_check(project_id: str):
     - Vercel/Netlify regenerate ETags for entire deployments
     - 304 responses can be cached/stale
     - Semantic fingerprinting detects actual content changes
+
     """
     import asyncio
     import httpx
     from app.services.semantic_extractor import extract_semantic_fingerprint
     from app.models.curated_page import CuratedPage
     
+    scheduler = get_scheduler()
     session = SyncSessionLocal()
+    
     try:
         project = session.query(Project).filter(Project.id == project_id).first()
         if not project or project.status != "ready":
+            # Re-schedule for next interval even if not ready
+            scheduler.schedule_lightweight_check(project_id)
             return {"skipped": True, "reason": "not_ready"}
         
         # Get curated pages (only pages that are in llms.txt)
@@ -1991,6 +1939,10 @@ def lightweight_batch_check(project_id: str):
         else:
             logger.debug(f"Non-significant changes for {project.url} (score={significance['score']})")
             session.commit()
+            
+            # Re-schedule next lightweight check
+            scheduler.schedule_lightweight_check(project_id)
+            
             return {
                 "significant": False,
                 "score": significance["score"],
@@ -2001,6 +1953,8 @@ def lightweight_batch_check(project_id: str):
     except Exception as e:
         session.rollback()
         logger.error(f"lightweight_batch_check failed for {project_id}: {e}")
+        # Re-schedule on failure
+        scheduler.schedule_lightweight_check(project_id)
         return {"error": str(e)}
     finally:
         session.close()
@@ -2009,40 +1963,100 @@ def lightweight_batch_check(project_id: str):
 def _trigger_lightweight_rescrape(session, project: Project) -> dict:
     """Trigger a full rescrape from lightweight change detection.
     
-    Respects cooldown period to prevent over-triggering on frequently
+    Uses Redis-based cooldown to prevent over-triggering on frequently
     changing pages or false positives.
     
     Returns:
         dict with 'triggered' bool and 'reason' if skipped
     """
-    # Check cooldown period
-    cooldown_hours = settings.full_rescrape_cooldown_hours
-    if project.last_lightweight_rescrape_at:
-        cooldown = timedelta(hours=cooldown_hours)
-        time_since_last = datetime.now(timezone.utc) - project.last_lightweight_rescrape_at
-        if time_since_last < cooldown:
-            remaining = cooldown - time_since_last
-            logger.info(
-                f"Skipping rescrape for {project.url} - within {cooldown_hours}h cooldown "
-                f"({remaining.total_seconds() / 3600:.1f}h remaining)"
-            )
-            return {"triggered": False, "reason": "cooldown", "remaining_hours": remaining.total_seconds() / 3600}
+    scheduler = get_scheduler()
+    project_id = str(project.id)
+    
+    # Check cooldown period via Redis
+    if scheduler.is_in_cooldown(project_id):
+        remaining = scheduler.get_cooldown_remaining(project_id)
+        logger.info(
+            f"Skipping rescrape for {project.url} - within cooldown "
+            f"({remaining:.1f}h remaining)"
+        )
+        # Re-schedule lightweight check
+        scheduler.schedule_lightweight_check(project_id)
+        return {"triggered": False, "reason": "cooldown", "remaining_hours": remaining}
     
     # Trigger the rescrape
     job = CrawlJob(project_id=project.id, trigger_reason="lightweight_change_detected")
     session.add(job)
     session.flush()  # Get job ID
     
-    now = datetime.now(timezone.utc)
     project.status = "pending"  # Will be set to crawling by initial_crawl
-    project.last_lightweight_rescrape_at = now
     
-    # Reset the 24h scheduled rescrape timer since we're doing a rescrape now
-    project.next_check_at = now + timedelta(hours=project.check_interval_hours or 24)
+    # Set cooldown in Redis
+    scheduler.set_cooldown(project_id)
     
-    logger.info(f"Triggering rescrape for {project.url} due to lightweight change detection (next scheduled check reset to {project.next_check_at})")
+    # Cancel scheduled checks while rescrape is in progress
+    scheduler.cancel_full_check(project_id)
+    scheduler.cancel_lightweight_check(project_id)
+    
+    logger.info(f"Triggering rescrape for {project.url} due to lightweight change detection")
     
     # Dispatch async
     initial_crawl.delay(str(project.id), str(job.id))
     
     return {"triggered": True}
+
+
+# =============================================================================
+# Migration & Maintenance Tasks
+# =============================================================================
+
+@celery_app.task
+def migrate_schedules_to_redis():
+    """One-time migration: populate Redis scheduler from existing ready projects.
+    
+    Run this after deploying the Redis scheduler to initialize schedules
+    for all existing projects. Safe to run multiple times (idempotent).
+    """
+    import random
+    
+    scheduler = get_scheduler()
+    session = SyncSessionLocal()
+    
+    try:
+        # Get all ready projects
+        projects = session.query(Project).filter(Project.status == "ready").all()
+        
+        migrated = 0
+        for project in projects:
+            project_id = str(project.id)
+            
+            # Schedule full check (24h default, will adapt on next run)
+            scheduler.schedule_full_check(project_id, interval_hours=24)
+            
+            # Schedule lightweight check with random stagger
+            random_offset = random.randint(0, settings.lightweight_check_interval_minutes)
+            scheduler.schedule_lightweight_check(project_id, interval_minutes=random_offset)
+            
+            migrated += 1
+        
+        stats = scheduler.get_schedule_stats()
+        logger.info(f"Migrated {migrated} projects to Redis scheduler")
+        logger.info(f"Schedule stats: {stats}")
+        
+        return {
+            "migrated": migrated,
+            "stats": stats,
+        }
+        
+    except Exception as e:
+        logger.error(f"Migration failed: {e}")
+        return {"error": str(e)}
+        
+    finally:
+        session.close()
+
+
+@celery_app.task
+def get_scheduler_stats():
+    """Get current Redis scheduler statistics."""
+    scheduler = get_scheduler()
+    return scheduler.get_schedule_stats()
