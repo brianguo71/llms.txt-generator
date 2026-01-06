@@ -373,22 +373,6 @@ class LLMCurator:
         
         total_input = len(non_homepage_pages) + (1 if homepage else 0)
         
-        # Fallback: if filter was too aggressive (< 3 pages), include some extra pages
-        # This ensures the LLM has enough context to understand the site
-        min_pages_for_context = 5
-        if len(filtered_pages) < min_pages_for_context and len(non_homepage_pages) > 0:
-            logger.warning(
-                f"Filter too aggressive: only {len(filtered_pages)} pages kept. "
-                f"Adding sample pages for context."
-            )
-            # Add first few non-homepage pages that aren't already included
-            existing_urls = {p.get("url") for p in filtered_pages}
-            for page in non_homepage_pages:
-                if page.get("url") not in existing_urls:
-                    filtered_pages.append(page)
-                    if len(filtered_pages) >= min_pages_for_context:
-                        break
-            logger.info(f"After fallback: {len(filtered_pages)} pages for context")
         
         logger.info(f"Filtering complete: {len(filtered_pages)}/{total_input} pages relevant (homepage always included)")
         
