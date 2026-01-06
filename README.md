@@ -11,10 +11,10 @@ Automatically generate and maintain [llms.txt](https://llmstxt.org/) files for w
 ## Features
 
 - **Automatic Generation**: Enter a URL and get a well-structured llms.txt file
-- **Dual Crawler Backends**: Choose between Firecrawl (managed API) or Scrapy (self-hosted) via config
-- **Intelligent Crawling**: JS rendering and clean markdown extraction
+- **Self-Hosted Crawling**: Uses Scrapy with automatic Playwright fallback for JS-heavy sites
+- **Intelligent Content Extraction**: Semantic HTML parsing with markdown conversion
 - **LLM-Powered Curation**: Uses GPT-4o-mini to generate meaningful descriptions and categorizations
-- **Native Change Detection**: Automatic monitoring with tiered re-scrapes
+- **Change Detection**: Automatic monitoring with lightweight hash-based checks and full rescrapes
 
 ## Tech Stack
 
@@ -24,8 +24,7 @@ Automatically generate and maintain [llms.txt](https://llmstxt.org/) files for w
 | Backend | FastAPI (Python) |
 | Database | PostgreSQL |
 | Task Queue | Celery + Redis |
-| Web Crawling | [Firecrawl](https://firecrawl.dev) or [Scrapy](https://scrapy.org) + Playwright |
-| Change Detection | Celery Beat + Crawler |
+| Web Crawling | [Scrapy](https://scrapy.org) + [Playwright](https://playwright.dev) (JS fallback) |
 
 ## Quick Start
 
@@ -49,12 +48,6 @@ cd llmstxt
 Create a `.env` file in the project root:
 
 ```env
-# Crawler backend: "firecrawl" (default) or "scrapy"
-CRAWLER_BACKEND=firecrawl
-
-# Firecrawl API key (required if using firecrawl backend)
-FIRECRAWL_API_KEY=fc-your-firecrawl-key
-
 # LLM API Keys (at least one required)
 OPENAI_API_KEY=sk-your-openai-key
 ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
@@ -88,54 +81,106 @@ npm run dev
 - API: http://localhost:8000
 - API Docs: http://localhost:8000/docs
 
-### Getting API Keys
-
-#### Firecrawl API Key
-
-1. Sign up at [firecrawl.dev](https://firecrawl.dev)
-2. Copy your API key from the dashboard
-3. Add to `.env` as `FIRECRAWL_API_KEY`
-
 ## Architecture
 
 ### Crawling Pipeline
 
 ```
-URL → Firecrawl API → Filter (LLM batch) → Curate (LLM) → Generate llms.txt
+URL → Scrapy Crawl → Filter (LLM batch) → Curate (LLM) → Generate llms.txt
 ```
 
-1. **Crawl**: Firecrawl handles BFS crawling, JS rendering, and markdown extraction in one API call
+1. **Crawl**: Scrapy spider crawls the site with automatic Playwright fallback for JS-heavy pages
 2. **Filter**: Batch LLM classification to identify relevant pages (excludes blog posts, job listings, etc.)
 3. **Curate**: LLM generates site overview, sections with prose descriptions, and page descriptions
-4. **Generate**: Assemble final llms.txt with Profound-style formatting
+4. **Generate**: Assemble final llms.txt with structured formatting
 
-### Crawler Backends
+### How Scrapy Works
 
-The application supports two crawler backends, selectable via `CRAWLER_BACKEND` env var:
+The Scrapy crawler is the core of the crawling system, running as a subprocess to avoid Twisted reactor conflicts with Celery. It consists of three specialized spiders:
 
-#### Firecrawl (Default)
+#### 1. Website Spider (`WebsiteSpider`)
 
-Managed API service - simpler setup, pay-per-use.
+The primary spider for full site crawls:
 
-| Feature | Value |
-|---------|-------|
-| Setup | API key only |
-| JS rendering | Built-in |
-| Rate limiting | Automatic |
-| Cost | Pay per page crawled |
+- **BFS Crawling**: Starts from a URL and follows same-domain links
+- **Automatic Playwright Fallback**: Detects JS-heavy pages and retries with headless browser
+- **Content Extraction**: Extracts title, meta description, and converts HTML to markdown
+- **Semantic Fingerprinting**: Generates content hashes for change detection
 
-#### Scrapy
+**JS Detection Logic:**
+- Visible text content < 500 characters triggers Playwright
+- Explicit "requires javascript" warnings trigger Playwright
 
-Self-hosted crawling with Playwright fallback for JS-heavy pages.
+```python
+# Example: How JS detection works
+if visible_text_length < 500 or "requires javascript" in body:
+    # Retry with Playwright headless browser
+    yield Request(url, meta={'playwright': True})
+```
 
-| Feature | Value |
-|---------|-------|
-| Setup | No external API needed |
-| JS rendering | Automatic Playwright fallback |
-| Rate limiting | Configurable |
-| Cost | Free (self-hosted) |
+#### 2. URL Discovery Spider (`UrlDiscoverySpider`)
 
-**Scrapy JS Detection**: The spider first tries standard HTTP requests. If the response has < 500 chars of text or contains "requires javascript" warnings, it automatically retries with Playwright.
+Lightweight spider for fast URL inventory:
+
+- **Speed Optimized**: 16 concurrent requests, no content extraction
+- **No Playwright**: Uses standard HTTP only (faster)
+- **URL Collection**: Discovers all same-domain links for map operations
+
+#### 3. Batch Scrape Spider (`BatchScrapeSpider`)
+
+Targeted spider for specific URL lists:
+
+- **No Link Following**: Only scrapes the provided URLs
+- **Playwright Support**: Includes JS fallback like the main spider
+- **Selective Updates**: Used for re-scraping changed pages
+
+#### Subprocess Execution
+
+Scrapy runs in isolated subprocesses to solve the "ReactorNotRestartable" problem:
+
+```
+Celery Task → subprocess.run(scrapy_runner.py) → Scrapy Process → JSON output
+```
+
+Each crawl spawns a fresh Python process, ensuring clean reactor state for Twisted/asyncio compatibility.
+
+#### Scrapy Configuration
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| `CONCURRENT_REQUESTS` | 8 | Parallel requests |
+| `DOWNLOAD_DELAY` | 0.5s | Delay between requests |
+| `AUTOTHROTTLE_ENABLED` | True | Adaptive rate limiting |
+| `ROBOTSTXT_OBEY` | True | Respects robots.txt |
+
+### Content Processing
+
+#### HTML to Markdown
+
+The crawler converts HTML to clean markdown using `html2text`:
+
+1. **Main Content Detection**: Prioritizes `<main>`, `<article>`, `[role="main"]`, `.content`
+2. **Clean Conversion**: Preserves links, removes images, no line wrapping
+3. **Semantic Extraction**: Extracts title, description, and body text
+
+#### Semantic Fingerprinting
+
+For lightweight change detection, pages are fingerprinted using semantic content:
+
+```python
+# What's included in the fingerprint:
+- TITLE: page title
+- DESC: meta description
+- OG_TITLE/OG_DESC: Open Graph metadata
+- CONTENT: main body text (first 10,000 chars)
+- NAV: navigation link structure
+
+# What's excluded (noisy elements):
+- Scripts, styles, iframes, SVGs
+- Ad/analytics selectors
+- Cookie consent modals
+- Popups and overlays
+```
 
 ### Change Detection
 
@@ -145,16 +190,16 @@ The system uses a **two-tier change detection** strategy powered by Celery Beat:
 
 Faster, cheaper checks to verify existing served links (curated sites) still exist and are still accurate.
 
-1. **Sample Hashing**: Served links have key content hashed (title, content, nav bar changes, desc) while ignoring noising elements (style, script, etc).
+1. **Sample Hashing**: Served links have key content hashed (title, content, nav bar changes, desc) while ignoring noisy elements (style, script, etc).
 2. **Cheaper Hash Check**: Fetch HTML for served links and compare previous content hash.
-3. **LLM Change Significance**: Call LLM (default: gpt-o4-mini) to determine if content changes are significant enough to regenerate/delete the section the link is under.
+3. **LLM Change Significance**: Call LLM (default: gpt-4o-mini) to determine if content changes are significant enough to regenerate/delete the section the link is under.
 4. **Staggered scheduling**: Projects are spread evenly across the interval to avoid thundering herd
 
 #### Tier 2: Full Rescrape (Daily by default, with backoff)
 
 When lightweight checks detect significant changes, or on the configured schedule:
 
-1. **Full crawl**: Re-crawls the entire site using Firecrawl/Scrapy
+1. **Full crawl**: Re-crawls the entire site using Scrapy
 2. **LLM curation**: Regenerates page descriptions and categories
 3. **Adaptive backoff**: 
    - No changes: doubles interval (24h → 48h → 96h → 168h max)
@@ -182,8 +227,6 @@ Once running, visit `/docs` for interactive API documentation.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CRAWLER_BACKEND` | Crawler to use (`firecrawl` or `scrapy`) | `firecrawl` |
-| `FIRECRAWL_API_KEY` | Firecrawl API key (required for firecrawl backend) | - |
 | `OPENAI_API_KEY` | OpenAI API key | - |
 | `ANTHROPIC_API_KEY` | Anthropic API key | - |
 | `LLM_PROVIDER` | Which LLM to use (`openai` or `anthropic`) | `openai` |
@@ -216,7 +259,15 @@ llmstxt/
 │   │   ├── models/        # SQLAlchemy models
 │   │   ├── prompts/       # LLM prompts
 │   │   ├── repositories/  # Data access layer
-│   │   ├── services/      # Business logic (crawler, curator)
+│   │   ├── services/      # Business logic
+│   │   │   ├── scrapy_crawler.py     # Scrapy orchestrator
+│   │   │   ├── scrapy_runner.py      # Subprocess runner
+│   │   │   ├── semantic_extractor.py # Fingerprint extraction
+│   │   │   ├── llm_curator.py        # LLM curation
+│   │   │   └── spiders/              # Scrapy spiders
+│   │   │       ├── website_spider.py
+│   │   │       ├── url_discovery_spider.py
+│   │   │       └── batch_scrape_spider.py
 │   │   ├── workers/       # Celery tasks
 │   │   ├── config.py      # Settings
 │   │   ├── database.py    # DB connection
@@ -249,7 +300,6 @@ llmstxt/
 5. Set required environment variables:
    - `DATABASE_URL` (from Railway PostgreSQL)
    - `REDIS_URL` (from Railway Redis)
-   - `FIRECRAWL_API_KEY`
    - `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`
    - `CORS_ORIGINS` (your Vercel frontend URL)
 
@@ -267,4 +317,5 @@ MIT License - see LICENSE file for details.
 ## Acknowledgments
 
 - [llms.txt specification](https://llmstxt.org/)
-- [Firecrawl](https://firecrawl.dev) for web crawling
+- [Scrapy](https://scrapy.org) for web crawling
+- [Playwright](https://playwright.dev) for JS rendering
