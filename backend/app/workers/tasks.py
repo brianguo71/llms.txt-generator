@@ -5,6 +5,7 @@ The actual business logic lives in the services module.
 """
 
 import hashlib
+import json as _json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -83,6 +84,8 @@ def _save_curated_data(
     session.query(CuratedPage).filter(CuratedPage.project_id == project_id).delete()
     
     # Save sections and pages
+    saved_urls = set()
+    
     for section in sections:
         page_urls = [p.url for p in section.pages]
         section_hash = _compute_section_hash(pages_data, page_urls)
@@ -98,6 +101,11 @@ def _save_curated_data(
         
         # Save individual pages within section
         for page in section.pages:
+            # Skip if URL already saved (prevents PK conflict when page appears in multiple sections)
+            if page.url in saved_urls:
+                continue
+            saved_urls.add(page.url)
+            
             content_hash = url_to_hash.get(page.url, "")
             
             new_page = CuratedPage(
@@ -991,7 +999,8 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
                     elapsed=time.time() - curate_start, extra=f"Regenerated: {section_name}"
                 )
             
-            # Create new sections
+            # Create new sections (track inserted URLs to prevent duplicates)
+            new_section_inserted_urls = set()
             for new_section_name in new_sections_needed:
                 # Get pages assigned to this new section
                 section_pages = []
@@ -1020,15 +1029,23 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
                     )
                     session.add(new_section)
                     
-                    # Add curated pages for new section
+                    # Add curated pages for new section (with deduplication)
                     for page_data in section_pages:
+                        url = page_data.get("url", "")
+                        # Skip if already inserted in this batch or exists in curated
+                        if url in new_section_inserted_urls:
+                            continue
+                        if url in {cp.url for cp in existing_curated}:
+                            continue
+                        new_section_inserted_urls.add(url)
+                        
                         new_curated_page = CuratedPage(
                             project_id=project_id,
-                            url=page_data.get("url", ""),
+                            url=url,
                             title=page_data.get("title", ""),
                             description=next(
                                 (p.get("description", "") for p in regen_result.get("pages", []) 
-                                 if p.get("url") == page_data.get("url")),
+                                 if p.get("url") == url),
                                 ""
                             ),
                             category=new_section_name,
@@ -1416,8 +1433,16 @@ def targeted_recrawl(self, project_id: str, changed_urls: list[str]) -> dict:
                     new_section_created = True
                     logger.info(f"Created new section: {section_name}")
             
-            # Add new pages to curated_pages
+            # Add new pages to curated_pages (with deduplication)
+            inserted_urls = set()
             for curated_page in categorization.pages:
+                # Skip if URL already inserted in this batch or exists in DB
+                if curated_page.url in inserted_urls:
+                    continue
+                if curated_page.url in existing_by_url:
+                    continue
+                inserted_urls.add(curated_page.url)
+                
                 content_hash = next(
                     (p.get("content_hash", "") for p in new_pages_data if p.get("url") == curated_page.url),
                     ""

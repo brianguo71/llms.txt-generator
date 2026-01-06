@@ -238,11 +238,16 @@ class LLMCurator:
         
         # Parse sections from new schema, filtering out hallucinated URLs
         sections = []
+        seen_urls = set()  # Track URLs we've already assigned to a section
         for section_data in data.get("sections", []):
             section_pages = []
             for p in section_data.get("pages", []):
                 url = p.get("url", "")
                 if is_valid_url(url):
+                    url_normalized = url.rstrip("/").lower()
+                    if url_normalized in seen_urls:
+                        continue  # Skip duplicate URL
+                    seen_urls.add(url_normalized)
                     section_pages.append(CuratedPageData(
                         url=url,
                         title=p.get("title", ""),
