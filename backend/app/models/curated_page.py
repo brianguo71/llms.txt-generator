@@ -41,6 +41,12 @@ class CuratedPage(Base):
     # Used to detect if page has changed and needs re-curation
     content_hash: Mapped[str] = mapped_column(String(64))
 
+    # Fingerprinting for lightweight change detection
+    etag: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_modified_header: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Raw header for If-Modified-Since
+    content_length: Mapped[int | None] = mapped_column(nullable=True)  # For Content-Length based change detection
+    sample_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)  # Semantic fingerprint hash
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
