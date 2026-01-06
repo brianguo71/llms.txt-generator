@@ -14,8 +14,7 @@ Automatically generate and maintain [llms.txt](https://llmstxt.org/) files for w
 - **Dual Crawler Backends**: Choose between Firecrawl (managed API) or Scrapy (self-hosted) via config
 - **Intelligent Crawling**: JS rendering and clean markdown extraction
 - **LLM-Powered Curation**: Uses GPT-4o-mini to generate meaningful descriptions and categorizations
-- **Native Change Detection**: Automatic monitoring with adaptive scheduling (daily to weekly)
-- **Scalable Architecture**: Built with extensibility in mind
+- **Native Change Detection**: Automatic monitoring with tiered re-scrapes
 
 ## Tech Stack
 
@@ -149,9 +148,7 @@ Fast, low-cost checks using HTTP HEAD requests across ALL crawled pages:
 1. **Staggered scheduling**: Projects are spread evenly across the interval to avoid thundering herd
 2. **HEAD requests**: Check ETag/Last-Modified headers for changes (very cheap)
 3. **Heuristic analysis**: If headers indicate changes, fetch content and analyze significance
-4. **Two-hash strategy**: 
-   - `etag`: Updated after each lightweight check (for HTTP 304 optimization)
-   - `baseline_html_hash`: Only updated after full rescrape (for cumulative drift detection)
+4. **Fallback Strategy**: If site is headless, fetch HTML and detect change significance using semantics fingerprinting
 
 This ensures that many small, incremental changes are detected as cumulative drift.
 
