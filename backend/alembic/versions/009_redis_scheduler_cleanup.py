@@ -18,7 +18,7 @@ Also removes unused columns from pages and crawl_jobs tables:
 - crawl_jobs.pages_discovered -> Never updated
 
 Revision ID: 009
-Revises: 008_curated_page_fingerprinting
+Revises: 008
 Create Date: 2026-01-06
 """
 
@@ -28,7 +28,7 @@ import sqlalchemy as sa
 
 # revision identifiers
 revision = "009"
-down_revision = "008_curated_page_fingerprinting"
+down_revision = "008"
 branch_labels = None
 depends_on = None
 
