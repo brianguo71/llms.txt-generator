@@ -9,10 +9,9 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import DbSession
 from app.config import get_settings
-from app.models import CrawlJob, Project
+from app.models import CrawlJob, GeneratedFileVersion, Project
 from app.repositories import (
     PostgresCrawlJobRepository,
-    PostgresPageRepository,
     PostgresProjectRepository,
 )
 from app.services.url_validator import URLValidator
@@ -38,11 +37,8 @@ class ProjectResponse(BaseModel):
     url: str
     name: str
     status: str
-    pages_count: int | None = None
     created_at: str
-    # Native change detection fields
-    next_check_at: str | None = None
-    check_interval_hours: int | None = None
+    last_updated_at: str | None = None  # When llms.txt was last regenerated
 
     class Config:
         from_attributes = True
@@ -151,8 +147,7 @@ async def create_project(
         name=project.name,
         status=project.status,
         created_at=project.created_at.isoformat(),
-        next_check_at=project.next_check_at.isoformat() if project.next_check_at else None,
-        check_interval_hours=project.check_interval_hours,
+        last_updated_at=None,  # No versions yet for new project
     )
 
 
@@ -161,13 +156,22 @@ async def list_projects(
     db: DbSession,
 ) -> ProjectListResponse:
     """List all projects."""
+    from sqlalchemy import desc, select
+    
     project_repo = PostgresProjectRepository(db)
-    page_repo = PostgresPageRepository(db)
     projects = await project_repo.get_all()
 
     project_responses = []
     for project in projects:
-        pages_count = await page_repo.count_by_project(project.id)
+        # Get the latest version's generated_at
+        latest_version_query = (
+            select(GeneratedFileVersion.generated_at)
+            .where(GeneratedFileVersion.project_id == project.id)
+            .order_by(desc(GeneratedFileVersion.version))
+            .limit(1)
+        )
+        result = await db.execute(latest_version_query)
+        latest_generated_at = result.scalar_one_or_none()
 
         project_responses.append(
             ProjectResponse(
@@ -175,10 +179,8 @@ async def list_projects(
                 url=project.url,
                 name=project.name,
                 status=project.status,
-                pages_count=pages_count,
                 created_at=project.created_at.isoformat(),
-                next_check_at=project.next_check_at.isoformat() if project.next_check_at else None,
-                check_interval_hours=project.check_interval_hours,
+                last_updated_at=latest_generated_at.isoformat() if latest_generated_at else None,
             )
         )
 
@@ -191,8 +193,9 @@ async def get_project(
     db: DbSession,
 ) -> ProjectResponse:
     """Get a specific project."""
+    from sqlalchemy import desc, select
+    
     project_repo = PostgresProjectRepository(db)
-    page_repo = PostgresPageRepository(db)
     project = await project_repo.get_by_id(project_id)
 
     if not project:
@@ -201,17 +204,23 @@ async def get_project(
             detail="Project not found",
         )
 
-    pages_count = await page_repo.count_by_project(project.id)
+    # Get the latest version's generated_at
+    latest_version_query = (
+        select(GeneratedFileVersion.generated_at)
+        .where(GeneratedFileVersion.project_id == project.id)
+        .order_by(desc(GeneratedFileVersion.version))
+        .limit(1)
+    )
+    result = await db.execute(latest_version_query)
+    latest_generated_at = result.scalar_one_or_none()
 
     return ProjectResponse(
         id=project.id,
         url=project.url,
         name=project.name,
         status=project.status,
-        pages_count=pages_count,
         created_at=project.created_at.isoformat(),
-        next_check_at=project.next_check_at.isoformat() if project.next_check_at else None,
-        check_interval_hours=project.check_interval_hours,
+        last_updated_at=latest_generated_at.isoformat() if latest_generated_at else None,
     )
 
 

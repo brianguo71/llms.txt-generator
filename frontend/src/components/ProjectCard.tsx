@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { Globe, Clock, FileText, Loader2, AlertCircle, ExternalLink } from 'lucide-react'
+import { Globe, Clock, Loader2, AlertCircle, ExternalLink } from 'lucide-react'
 import { Project } from '../lib/api'
 
 interface ProjectCardProps {
@@ -56,30 +56,6 @@ export default function ProjectCard({ project }: ProjectCardProps) {
     })
   }
 
-  const formatNextCheck = (dateString?: string) => {
-    if (!dateString) return null
-    const date = new Date(dateString)
-    const now = new Date()
-    const diffMs = date.getTime() - now.getTime()
-    
-    if (diffMs < 0) return 'Soon'
-    
-    const diffMins = Math.floor(diffMs / 60000)
-    const diffHours = Math.floor(diffMs / 3600000)
-    const diffDays = Math.floor(diffMs / 86400000)
-
-    if (diffMins < 60) return `in ${diffMins}m`
-    if (diffHours < 24) return `in ${diffHours}h`
-    return `in ${diffDays}d`
-  }
-
-  const formatInterval = (hours?: number) => {
-    if (!hours) return null
-    if (hours < 24) return `${hours}h`
-    const days = Math.round(hours / 24)
-    return `${days}d`
-  }
-
   const getDomain = (url: string) => {
     try {
       return new URL(url).hostname.replace('www.', '')
@@ -107,21 +83,10 @@ export default function ProjectCard({ project }: ProjectCardProps) {
         {getStatusBadge()}
       </div>
 
-      <div className="pt-4 border-t border-[var(--color-border)] flex items-center gap-6 text-sm text-[var(--color-text-muted)]">
-        {project.pages_count !== undefined && project.pages_count > 0 && (
-          <div className="flex items-center gap-1.5">
-            <FileText className="w-4 h-4" />
-            <span>{project.pages_count} pages</span>
-          </div>
-        )}
-        {project.status === 'ready' && project.next_check_at && (
-          <div className="flex items-center gap-1.5" title={`Checking every ${formatInterval(project.check_interval_hours)}`}>
-            <Clock className="w-4 h-4" />
-            <span>Next check {formatNextCheck(project.next_check_at)}</span>
-          </div>
-        )}
-        <div className="flex items-center gap-1.5 ml-auto">
-          <span className="text-xs">{formatDate(project.created_at)}</span>
+      <div className="pt-4 border-t border-[var(--color-border)] flex items-center text-sm text-[var(--color-text-muted)]">
+        <div className="flex items-center gap-1.5">
+          <Clock className="w-4 h-4" />
+          <span>Updated {formatDate(project.last_updated_at || project.created_at)}</span>
         </div>
       </div>
     </Link>

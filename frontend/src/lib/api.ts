@@ -105,11 +105,8 @@ export interface Project {
   url: string
   name: string
   status: 'pending' | 'crawling' | 'ready' | 'failed'
-  pages_count?: number
   created_at: string
-  // Native change detection fields
-  next_check_at?: string
-  check_interval_hours?: number
+  last_updated_at?: string  // When llms.txt was last regenerated
 }
 
 export interface CrawlJob {
