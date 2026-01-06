@@ -17,15 +17,18 @@ llms.txt contains AI-friendly descriptions of webpages. We need to determine if 
 ## Evaluation Criteria
 
 SIGNIFICANT changes (require description update):
+- Page title/header changed
 - Core purpose or function of the page changed
 - Major features added, removed, or substantially modified
-- Pricing or plan structure changed
 - Key product/service offerings changed
 - Target audience or use cases changed
 - Technical requirements or integrations changed
 - Page was restructured with different main topics
+- Major rewrites of the page (>50 words)
 
 NOT SIGNIFICANT changes (keep existing description):
+- Minor rewrites of the page (<50 words)
+- Pricing changes
 - Typo fixes, grammar corrections, punctuation changes
 - Date or version number updates
 - Minor wording tweaks that don't change meaning
@@ -60,12 +63,12 @@ llms.txt contains AI-friendly descriptions of webpages. We need to determine whi
 SIGNIFICANT changes (require description update):
 - Core purpose or function of the page changed
 - Major features added, removed, or substantially modified
-- Pricing or plan structure changed
 - Key product/service offerings changed
 - Target audience or use cases changed
 - Technical requirements or integrations changed
 
 NOT SIGNIFICANT changes (keep existing description):
+- Pricing changes
 - Typo fixes, grammar corrections, minor wording tweaks
 - Date, version, or copyright year updates
 - Formatting, layout, or navigation changes
@@ -75,10 +78,10 @@ NOT SIGNIFICANT changes (keep existing description):
 ## Output
 Return ONLY a JSON object with URLs that have SIGNIFICANT changes:
 {{
-  "significant_urls": ["https://example.com/pricing", "https://example.com/features"],
+  "significant_urls": ["https://example.com/values", "https://example.com/features"],
   "reasons": {{
-    "https://example.com/pricing": "Pricing tiers were restructured",
-    "https://example.com/features": "New major feature added"
+    "https://example.com/values": "Values were updated",
+    "https://example.com/features": "Features were updated"
   }}
 }}
 
