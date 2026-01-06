@@ -198,10 +198,6 @@ Once running, visit `/docs` for interactive API documentation.
 |----------|-------------|---------|
 | `LIGHTWEIGHT_CHECK_ENABLED` | Enable/disable lightweight checks | `true` |
 | `LIGHTWEIGHT_CHECK_INTERVAL_MINUTES` | How often to check each project | `5` |
-| `LIGHTWEIGHT_CONCURRENT_REQUESTS` | Max concurrent HEAD requests per project | `20` |
-| `LIGHTWEIGHT_REQUEST_DELAY_MS` | Delay between requests (politeness) | `50` |
-| `LIGHTWEIGHT_CHANGE_THRESHOLD_PERCENT` | % of pages with changes to auto-trigger rescrape | `20` |
-| `LIGHTWEIGHT_SIGNIFICANCE_THRESHOLD` | Heuristic score threshold for cumulative drift | `30` |
 
 #### Full Rescrape Settings
 
