@@ -3,11 +3,10 @@
 SECTION_REGENERATION_PROMPT = """Regenerate the description for the "{section_name}" section.
 
 ## Site Context
-Site: {site_title}
-Tagline: {site_tagline}
+{site_context}
 
 ## Pages in This Section
-{pages_data}
+{pages}
 
 ## Output
 Return JSON with:

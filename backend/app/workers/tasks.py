@@ -1519,11 +1519,11 @@ def targeted_recrawl(self, project_id: str, changed_urls: list[str]) -> dict:
                 for p in section_pages
             ]
             
+            site_context = f"{site_overview.site_title}: {site_overview.tagline}" if site_overview.tagline else site_overview.site_title
             regeneration = curator.regenerate_section(
                 section_name=section_name,
                 pages=pages_for_prompt,
-                site_title=site_overview.site_title,
-                site_tagline=site_overview.tagline,
+                site_context=site_context,
             )
             
             section.description = regeneration.description
