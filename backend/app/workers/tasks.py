@@ -76,8 +76,9 @@ def _save_curated_data(
         )
         session.add(new_overview)
     
-    # Build URL to content_hash map from crawled data
-    url_to_hash = {p.get("url"): p.get("content_hash", "") for p in pages_data}
+    # Build URL to hash maps from crawled data
+    url_to_content_hash = {p.get("url"): p.get("content_hash", "") for p in pages_data}
+    url_to_sample_hash = {p.get("url"): p.get("sample_hash", "") for p in pages_data}
     
     # Delete existing sections and pages (we'll recreate them)
     session.query(CuratedSection).filter(CuratedSection.project_id == project_id).delete()
@@ -106,7 +107,8 @@ def _save_curated_data(
                 continue
             saved_urls.add(page.url)
             
-            content_hash = url_to_hash.get(page.url, "")
+            content_hash = url_to_content_hash.get(page.url, "")
+            sample_hash = url_to_sample_hash.get(page.url, "")
             
             new_page = CuratedPage(
                 project_id=project_id,
@@ -115,6 +117,7 @@ def _save_curated_data(
                 description=page.description,
                 category=section.name,  # Use section name as category
                 content_hash=content_hash,
+                sample_hash=sample_hash,  # Semantic fingerprint for lightweight checks
             )
             session.add(new_page)
 
@@ -1050,6 +1053,7 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
                             ),
                             category=new_section_name,
                             content_hash=page_data.get("content_hash", ""),
+                            sample_hash=page_data.get("sample_hash", ""),
                         )
                         session.add(new_curated_page)
                     
@@ -1447,6 +1451,10 @@ def targeted_recrawl(self, project_id: str, changed_urls: list[str]) -> dict:
                     (p.get("content_hash", "") for p in new_pages_data if p.get("url") == curated_page.url),
                     ""
                 )
+                sample_hash = next(
+                    (p.get("sample_hash", "") for p in new_pages_data if p.get("url") == curated_page.url),
+                    ""
+                )
                 
                 new_curated = CuratedPage(
                     project_id=project_id,
@@ -1455,6 +1463,7 @@ def targeted_recrawl(self, project_id: str, changed_urls: list[str]) -> dict:
                     description=curated_page.description,
                     category=curated_page.category,
                     content_hash=content_hash,
+                    sample_hash=sample_hash,
                 )
                 session.add(new_curated)
                 affected_sections.add(curated_page.category)
@@ -1774,16 +1783,13 @@ def dispatch_lightweight_checks():
 def lightweight_batch_check(project_id: str):
     """Check curated pages for changes using semantic fingerprinting.
     
-    Uses semantic fingerprinting as the source of truth:
-    - Fetches full HTML for each curated page
-    - Extracts semantic fingerprint (ignores scripts, styles, deploy artifacts)
-    - Compares to stored sample_hash to detect real content changes
+    Compares current page content against stored sample_hash (semantic fingerprint).
+    Fingerprints are computed during initial crawl, so this just compares them.
     
-    This approach is more reliable than HTTP headers because:
+    Semantic fingerprinting is more reliable than HTTP headers because:
     - Vercel/Netlify regenerate ETags for entire deployments
     - 304 responses can be cached/stale
     - Semantic fingerprinting detects actual content changes
-
     """
     import asyncio
     import httpx
@@ -1796,19 +1802,19 @@ def lightweight_batch_check(project_id: str):
     try:
         project = session.query(Project).filter(Project.id == project_id).first()
         if not project or project.status != "ready":
-            # Re-schedule for next interval even if not ready
             scheduler.schedule_lightweight_check(project_id)
             return {"skipped": True, "reason": "not_ready"}
         
-        # Get curated pages (only pages that are in llms.txt)
+        # Get curated pages with existing fingerprints
         curated_pages = session.query(CuratedPage).filter(
             CuratedPage.project_id == project_id,
+            CuratedPage.sample_hash.isnot(None),
+            CuratedPage.sample_hash != "",
         ).all()
         
         if not curated_pages:
-            # Still reschedule even if no curated pages (project may get curated later)
             scheduler.schedule_lightweight_check(project_id)
-            return {"skipped": True, "reason": "no_curated_pages"}
+            return {"skipped": True, "reason": "no_curated_pages_with_fingerprints"}
         
         logger.info(f"Lightweight check for {project.url}: {len(curated_pages)} curated pages")
         
@@ -1827,31 +1833,19 @@ def lightweight_batch_check(project_id: str):
                         if delay > 0:
                             await asyncio.sleep(delay)
                         try:
-                            # Fetch full page
                             resp = await client.get(page.url)
                             html = resp.text
                             
                             # Extract semantic fingerprint
                             new_fingerprint = extract_semantic_fingerprint(html, max_content_length=10000)
                             
-                            # Get HTTP headers for storage
-                            new_etag = resp.headers.get("ETag")
-                            new_last_modified = resp.headers.get("Last-Modified")
-                            new_content_length = resp.headers.get("Content-Length")
-                            new_cl_int = int(new_content_length) if new_content_length else None
-                            
-                            # Determine if this is first check or if content changed
-                            is_first_check = not page.sample_hash
-                            changed = not is_first_check and new_fingerprint != page.sample_hash
+                            # Compare against stored fingerprint
+                            changed = new_fingerprint != page.sample_hash
                             
                             return {
                                 "url": page.url,
                                 "changed": changed,
-                                "is_first_check": is_first_check,
                                 "new_fingerprint": new_fingerprint,
-                                "new_etag": new_etag,
-                                "new_last_modified": new_last_modified,
-                                "new_content_length": new_cl_int,
                                 "html": html,
                             }
                         except Exception as e:
@@ -1864,33 +1858,15 @@ def lightweight_batch_check(project_id: str):
         
         # Categorize results
         changed_results = [r for r in results if r.get("changed")]
-        first_check_results = [r for r in results if r.get("is_first_check") and not r.get("error")]
         errors = [r for r in results if r.get("error")]
-        
-        # First check: store fingerprints for all pages
-        if first_check_results:
-            logger.info(f"First lightweight check for {len(first_check_results)} curated pages - storing fingerprints")
-            for result in first_check_results:
-                page = pages_by_url.get(result["url"])
-                if page and result.get("new_fingerprint"):
-                    page.sample_hash = result["new_fingerprint"]
-                    if result.get("new_etag"):
-                        page.etag = result["new_etag"]
-                    if result.get("new_last_modified"):
-                        page.last_modified_header = result["new_last_modified"]
-                    if result.get("new_content_length"):
-                        page.content_length = result["new_content_length"]
-            session.commit()
         
         # No changes detected
         if not changed_results:
-            logger.info(f"No changes detected for {project.url} (checked: {len(curated_pages)}, first_checks: {len(first_check_results)}, errors: {len(errors)})")
-            # Re-schedule next lightweight check
+            logger.info(f"No changes detected for {project.url} (checked: {len(curated_pages)}, errors: {len(errors)})")
             scheduler.schedule_lightweight_check(project_id)
             return {
                 "changed": False,
                 "pages_checked": len(curated_pages),
-                "first_checks": len(first_check_results),
                 "errors": len(errors),
             }
         
@@ -1901,12 +1877,6 @@ def lightweight_batch_check(project_id: str):
             page = pages_by_url.get(result["url"])
             if page and result.get("new_fingerprint"):
                 page.sample_hash = result["new_fingerprint"]
-                if result.get("new_etag"):
-                    page.etag = result["new_etag"]
-                if result.get("new_last_modified"):
-                    page.last_modified_header = result["new_last_modified"]
-                if result.get("new_content_length"):
-                    page.content_length = result["new_content_length"]
         
         # Bulk change threshold check
         change_ratio = len(changed_results) / len(curated_pages)

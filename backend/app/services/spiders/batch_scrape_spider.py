@@ -9,6 +9,8 @@ import html2text
 import scrapy
 from scrapy.http import Response
 
+from app.services.semantic_extractor import extract_semantic_fingerprint
+
 logger = logging.getLogger(__name__)
 
 
@@ -174,6 +176,9 @@ class BatchScrapeSpider(scrapy.Spider):
             description = response.css('meta[name="description"]::attr(content)').get() or ''
             description = description.strip()
             
+            # Get full HTML for semantic fingerprinting
+            full_html = response.text
+            
             # Get main content HTML and convert to markdown
             main_content = (
                 response.css('main').get() or
@@ -188,8 +193,11 @@ class BatchScrapeSpider(scrapy.Spider):
             markdown = self.html_converter.handle(main_content) if main_content else ''
             markdown = markdown.strip()
             
-            # Calculate content hash
+            # Calculate content hash (for backwards compatibility)
             content_hash = hashlib.sha256(markdown.encode()).hexdigest() if markdown else ''
+            
+            # Calculate semantic fingerprint for lightweight change detection
+            sample_hash = extract_semantic_fingerprint(full_html, max_content_length=10000) if full_html else ''
             
             # Determine if homepage
             is_homepage = self._is_homepage(response.url)
@@ -200,6 +208,7 @@ class BatchScrapeSpider(scrapy.Spider):
                 'description': description,
                 'markdown': markdown,
                 'content_hash': content_hash,
+                'sample_hash': sample_hash,
                 'is_homepage': is_homepage,
                 'depth': 0,  # Not relevant for batch scrape
             }
