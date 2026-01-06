@@ -127,6 +127,7 @@ class SchedulerService:
         run_at = datetime.now(timezone.utc) + timedelta(minutes=interval_minutes)
         score = run_at.timestamp()
         self.redis.zadd(LIGHTWEIGHT_CHECK_KEY, {project_id: score})
+        logger.info(f"Scheduled lightweight check for {project_id} at {run_at}")
         return run_at
 
     def get_due_lightweight_checks(self, limit: int = 500) -> list[str]:

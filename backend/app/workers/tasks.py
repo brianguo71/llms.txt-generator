@@ -1853,7 +1853,7 @@ def lightweight_batch_check(project_id: str):
                                 "html": html,
                             }
                         except Exception as e:
-                            logger.debug(f"Fetch failed for {page.url}: {e}")
+                            logger.warning(f"Fetch failed for {page.url}: {e}")
                             return {"url": page.url, "changed": False, "error": str(e)}
                 
                 return await asyncio.gather(*[check_one(p) for p in curated_pages])
@@ -1962,7 +1962,7 @@ def lightweight_batch_check(project_id: str):
                     "skip_reason": trigger_result.get("reason"),
                 }
         else:
-            logger.debug(f"Non-significant changes for {project.url} (score={significance['score']})")
+            logger.info(f"Non-significant changes for {project.url} (score={significance['score']})")
             session.commit()
             
             # Re-schedule next lightweight check
