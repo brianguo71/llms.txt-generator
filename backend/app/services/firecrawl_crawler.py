@@ -150,6 +150,101 @@ class FirecrawlCrawler:
             logger.error(f"Error scraping {url}: {e}")
             return None
 
+    def map_website(self, url: str) -> list[str]:
+        """Get all URLs on a website using Firecrawl /map endpoint.
+        
+        This is much faster than a full crawl and returns all discoverable
+        URLs on the site. Used for URL inventory tracking.
+        
+        Args:
+            url: The website URL to map
+            
+        Returns:
+            List of all discovered URLs on the site
+        """
+        logger.info(f"Mapping website URLs: {url}")
+        
+        try:
+            result = self.client.map(url=url)
+            # result has a 'links' attribute with the list of URLs or LinkResult objects
+            raw_links = result.links if hasattr(result, 'links') else []
+            # Convert LinkResult objects to strings if needed
+            urls = []
+            for link in raw_links:
+                if isinstance(link, str):
+                    urls.append(link)
+                elif hasattr(link, 'url'):
+                    urls.append(link.url)
+                else:
+                    # Try to convert to string
+                    urls.append(str(link))
+            logger.info(f"Map completed: {len(urls)} URLs discovered")
+            return urls
+        except Exception as e:
+            logger.error(f"Error mapping {url}: {e}")
+            raise
+
+    def batch_scrape(self, urls: list[str], start_url: str = "") -> list[dict[str, Any]]:
+        """Scrape multiple specific pages using Firecrawl batch API.
+        
+        More efficient than individual scrapes when you need content
+        from a specific set of URLs.
+        
+        Args:
+            urls: List of URLs to scrape
+            start_url: The site's root URL (for homepage detection)
+            
+        Returns:
+            List of page data dictionaries with markdown content
+        """
+        if not urls:
+            return []
+        
+        logger.info(f"Batch scraping {len(urls)} URLs")
+        
+        try:
+            # Use batch_scrape for multiple URLs
+            result = self.client.batch_scrape(
+                urls=urls,
+                formats=["markdown"],
+                only_main_content=True,
+                wait_for=self.wait_for_ms,
+            )
+            
+            pages = []
+            # result.data contains the list of Document objects
+            data = result.data if hasattr(result, 'data') and result.data else []
+            
+            for i, doc in enumerate(data):
+                meta = doc.metadata
+                url = getattr(meta, 'url', '') or getattr(meta, 'source_url', '') or ''
+                title = getattr(meta, 'title', '') or ''
+                description = getattr(meta, 'description', '') or ''
+                markdown = doc.markdown or ""
+                
+                is_homepage = self._is_homepage(url, start_url) if start_url else False
+                content_hash = hashlib.sha256(markdown.encode()).hexdigest() if markdown else ""
+                
+                page_data = {
+                    "url": url,
+                    "title": title,
+                    "description": description,
+                    "markdown": markdown,
+                    "content_hash": content_hash,
+                    "is_homepage": is_homepage,
+                    "depth": 0 if is_homepage else 1,
+                }
+                pages.append(page_data)
+                
+                self._report_progress(i + 1, len(data), url)
+            
+            logger.info(f"Batch scrape completed: {len(pages)} pages")
+            return pages
+            
+        except Exception as e:
+            logger.error(f"Error in batch scrape: {e}")
+            raise
+
     def _is_homepage(self, url: str, start_url: str) -> bool:
         """Check if a URL is the homepage of the start URL."""
         from urllib.parse import urlparse

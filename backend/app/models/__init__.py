@@ -8,6 +8,7 @@ from app.models.generated_file_version import GeneratedFileVersion
 from app.models.page import Page
 from app.models.project import Project
 from app.models.site_overview import SiteOverview
+from app.models.site_url_inventory import SiteUrlInventory
 
 __all__ = [
     "Project",
@@ -18,4 +19,5 @@ __all__ = [
     "CuratedPage",
     "CuratedSection",
     "SiteOverview",
+    "SiteUrlInventory",
 ]

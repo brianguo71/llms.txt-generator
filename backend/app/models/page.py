@@ -43,6 +43,8 @@ class Page(Base):
     last_modified_header: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Raw header for If-Modified-Since
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     baseline_html_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)  # For lightweight change detection
+    content_length: Mapped[int | None] = mapped_column(nullable=True)  # For Content-Length based change detection
+    sample_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)  # Hash of first 5KB for header-less sites
     sitemap_lastmod: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

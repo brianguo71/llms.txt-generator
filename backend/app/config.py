@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     lightweight_request_delay_ms: int = 50  # Delay between requests (politeness)
     lightweight_change_threshold_percent: int = 20  # % of pages with ETag changes to auto-trigger rescrape
     lightweight_significance_threshold: int = 30  # Heuristic score threshold for cumulative drift
+    full_rescrape_cooldown_hours: int = 2  # Min hours between lightweight-triggered rescrapes
 
     # Task queue backend (for future extensibility)
     task_queue_backend: Literal["celery", "sqs"] = "celery"

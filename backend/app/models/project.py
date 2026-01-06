@@ -35,6 +35,9 @@ class Project(Base):
     next_lightweight_check_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    last_lightweight_rescrape_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )  # For cooldown tracking
 
     # Status
     status: Mapped[str] = mapped_column(String(50), default="pending")
@@ -70,6 +73,9 @@ class Project(Base):
     curated_sections: Mapped[list["CuratedSection"]] = relationship(
         "CuratedSection", back_populates="project", cascade="all, delete-orphan"
     )
+    url_inventory: Mapped[list["SiteUrlInventory"]] = relationship(
+        "SiteUrlInventory", back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 # Forward references
@@ -80,3 +86,4 @@ from app.models.generated_file import GeneratedFile  # noqa: E402
 from app.models.generated_file_version import GeneratedFileVersion  # noqa: E402
 from app.models.page import Page  # noqa: E402
 from app.models.site_overview import SiteOverview  # noqa: E402
+from app.models.site_url_inventory import SiteUrlInventory  # noqa: E402

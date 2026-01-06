@@ -9,13 +9,15 @@ from urllib.parse import urlparse
 
 from app.config import Settings
 from app.prompts import (
-    CHANGE_SIGNIFICANCE_PROMPT,
+    BATCH_SEMANTIC_SIGNIFICANCE_PROMPT,
     CURATION_PROMPT,
     PAGE_CATEGORIZATION_PROMPT,
     PAGE_DESCRIPTION_PROMPT,
     PAGE_RELEVANCE_PROMPT,
     SECTION_REGENERATION_PROMPT,
+    SEMANTIC_SIGNIFICANCE_PROMPT,
 )
+from app.services.llms_txt_parser import LlmsTxtParser, ParsedLlmsTxt
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,14 @@ class PageCategorizationResult:
     """Result of categorizing newly discovered pages."""
     pages: list[CuratedPageData]
     new_sections_needed: list[str]
+    model_used: str
+
+
+@dataclass
+class SemanticSignificanceResult:
+    """Result of evaluating semantic significance of content changes."""
+    significant_urls: list[str]
+    reasons: dict[str, str]  # url -> reason
     model_used: str
 
 
@@ -360,6 +370,101 @@ class LLMCurator:
         
         return filtered_pages
 
+    def evaluate_semantic_significance(
+        self,
+        pages_with_changes: list[dict[str, Any]],
+        batch_size: int = 10,
+    ) -> SemanticSignificanceResult:
+        """Evaluate semantic significance of content changes for multiple pages.
+        
+        Takes pages that have hash mismatches and determines which changes
+        are semantically significant enough to warrant regenerating descriptions.
+        
+        Args:
+            pages_with_changes: List of dicts with 'url', 'old_content', 'new_content'
+            batch_size: Number of pages to evaluate per LLM request
+            
+        Returns:
+            SemanticSignificanceResult with significant URLs and reasons
+        """
+        if not pages_with_changes:
+            return SemanticSignificanceResult(
+                significant_urls=[],
+                reasons={},
+                model_used=self.settings.llm_model,
+            )
+        
+        significant_urls = []
+        all_reasons = {}
+        total_batches = (len(pages_with_changes) + batch_size - 1) // batch_size
+        
+        logger.info(f"Evaluating semantic significance for {len(pages_with_changes)} pages in {total_batches} batches")
+        
+        for batch_num in range(total_batches):
+            start_idx = batch_num * batch_size
+            end_idx = min(start_idx + batch_size, len(pages_with_changes))
+            batch = pages_with_changes[start_idx:end_idx]
+            
+            # Format batch for prompt
+            pages_data = self._format_changes_for_prompt(batch)
+            
+            prompt = BATCH_SEMANTIC_SIGNIFICANCE_PROMPT.format(pages_data=pages_data)
+            
+            logger.info(f"Evaluating batch {batch_num + 1}/{total_batches} ({len(batch)} pages)")
+            
+            try:
+                response = self._call_llm(prompt)
+                data = self._parse_json(response)
+                
+                batch_significant = data.get("significant_urls", [])
+                batch_reasons = data.get("reasons", {})
+                
+                significant_urls.extend(batch_significant)
+                all_reasons.update(batch_reasons)
+                
+                logger.info(f"Batch {batch_num + 1}: {len(batch_significant)}/{len(batch)} pages have significant changes")
+                
+            except Exception as e:
+                # On error, assume all changes are significant (fail safe)
+                logger.warning(f"Batch {batch_num + 1} evaluation failed: {e}. Assuming all changes significant.")
+                for page in batch:
+                    url = page.get("url", "")
+                    significant_urls.append(url)
+                    all_reasons[url] = "Evaluation failed - assuming significant"
+        
+        logger.info(f"Semantic significance evaluation complete: {len(significant_urls)}/{len(pages_with_changes)} pages have significant changes")
+        
+        return SemanticSignificanceResult(
+            significant_urls=significant_urls,
+            reasons=all_reasons,
+            model_used=self.settings.llm_model,
+        )
+
+    def _format_changes_for_prompt(self, pages: list[dict[str, Any]]) -> str:
+        """Format page content changes for the semantic significance prompt."""
+        formatted = []
+        for i, page in enumerate(pages, 1):
+            url = page.get("url", "")
+            old_content = page.get("old_content", "")
+            new_content = page.get("new_content", "")
+            
+            # Truncate content for prompt efficiency
+            old_preview = old_content[:800].strip() if old_content else "(no previous content)"
+            new_preview = new_content[:800].strip() if new_content else "(no new content)"
+            
+            if len(old_content) > 800:
+                old_preview += "..."
+            if len(new_content) > 800:
+                new_preview += "..."
+            
+            entry = f"{i}. URL: {url}\n"
+            entry += f"   PREVIOUS CONTENT:\n{old_preview}\n\n"
+            entry += f"   NEW CONTENT:\n{new_preview}\n"
+            
+            formatted.append(entry)
+        
+        return "\n---\n".join(formatted)
+
     def regenerate_section(
         self,
         section_name: str,
@@ -632,61 +737,234 @@ class LLMCurator:
             base_url=base_url,
         )
 
-    def analyze_change_significance(
+    def analyze_section_significance(
         self,
-        old_content: str,
-        new_content: str,
+        existing_llms_txt: str,
+        site_url: str,
+        crawled_pages: list[dict[str, Any]],
+        old_page_hashes: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Analyze whether content changes are significant enough to regenerate llms.txt.
+        """Analyze which sections of llms.txt need regeneration.
+        
+        Uses DETERMINISTIC comparison (not LLM interpretation) to avoid false positives:
+        1. URL comparison - detect pages added/removed
+        2. Content hash comparison - detect content changes on existing pages
         
         Args:
-            old_content: Previous homepage content (markdown, truncated)
-            new_content: New homepage content (markdown, truncated)
+            existing_llms_txt: Current llms.txt content (full, no truncation)
+            site_url: The site's base URL
+            crawled_pages: List of page dicts with 'url', 'title', 'description', 'content_hash'
+            old_page_hashes: Dict of url -> content_hash from previous crawl
             
         Returns:
-            Dict with "score" (0-100) and "reason" (brief explanation)
+            Dict with:
+            - any_changes: True if any section needs regeneration
+            - overview_changed: True if site overview needs update
+            - sections_to_regenerate: List of section dicts needing regeneration
+            - sections_unchanged: List of section names to keep
+            - content_changed_urls: List of URLs with content changes
+            - summary: Brief explanation
         """
-        # Truncate content to avoid token limits
-        max_chars = 3000
-        old_truncated = old_content[:max_chars] if old_content else "(empty)"
-        new_truncated = new_content[:max_chars] if new_content else "(empty)"
+        # Parse existing llms.txt into structured sections
+        parser = LlmsTxtParser()
+        parsed = parser.parse(existing_llms_txt)
         
-        prompt = CHANGE_SIGNIFICANCE_PROMPT.format(
-            old_content=old_truncated,
-            new_content=new_truncated,
+        # Get all URLs currently in the llms.txt
+        existing_urls = parsed.get_all_urls()
+        
+        # Get all URLs from the new crawl
+        crawled_urls = {page.get("url", "") for page in crawled_pages if page.get("url")}
+        
+        # Normalize URLs for comparison (remove trailing slashes, etc.)
+        def normalize_url(url: str) -> str:
+            return url.rstrip("/").lower()
+        
+        existing_normalized = {normalize_url(u) for u in existing_urls}
+        crawled_normalized = {normalize_url(u) for u in crawled_urls}
+        
+        # Calculate URL differences
+        urls_removed = existing_normalized - crawled_normalized
+        urls_added = crawled_normalized - existing_normalized
+        urls_unchanged = existing_normalized & crawled_normalized
+        
+        # Build content hash map for new pages
+        new_page_hashes = {}
+        for page in crawled_pages:
+            url = page.get("url", "")
+            # Use content_hash if available, otherwise compute from markdown
+            content_hash = page.get("content_hash")
+            if not content_hash:
+                markdown = page.get("markdown", "") or page.get("first_paragraph", "")
+                if markdown:
+                    content_hash = hashlib.sha256(markdown.encode()).hexdigest()
+            if url and content_hash:
+                new_page_hashes[normalize_url(url)] = content_hash
+        
+        # Compare content hashes for URLs that exist in both old and new
+        content_changed_urls = []
+        if old_page_hashes:
+            old_normalized = {normalize_url(u): h for u, h in old_page_hashes.items()}
+            
+            for url in urls_unchanged:
+                old_hash = old_normalized.get(url)
+                new_hash = new_page_hashes.get(url)
+                
+                if old_hash and new_hash and old_hash != new_hash:
+                    content_changed_urls.append(url)
+            
+            if content_changed_urls:
+                logger.info(
+                    f"Content changes detected for {len(content_changed_urls)} pages: "
+                    f"{content_changed_urls[:5]}{'...' if len(content_changed_urls) > 5 else ''}"
+                )
+        
+        logger.info(
+            f"URL comparison for {site_url}: "
+            f"existing={len(existing_normalized)}, crawled={len(crawled_normalized)}, "
+            f"removed={len(urls_removed)}, added={len(urls_added)}, unchanged={len(urls_unchanged)}, "
+            f"content_changed={len(content_changed_urls)}"
+        )
+        
+        # Determine which sections are affected
+        sections_to_regenerate = []
+        sections_unchanged = []
+        
+        for section in parsed.sections:
+            section_urls = {normalize_url(u) for u in section.get_urls()}
+            section_removed = section_urls & urls_removed
+            section_content_changed = section_urls & set(content_changed_urls)
+            
+            # Check if any section URLs were removed OR had content changes
+            if section_removed or section_content_changed:
+                reasons = []
+                if section_removed:
+                    reasons.append(f"URLs removed: {list(section_removed)[:3]}")
+                if section_content_changed:
+                    reasons.append(f"Content changed: {list(section_content_changed)[:3]}")
+                
+                sections_to_regenerate.append({
+                    "name": section.name,
+                    "reason": "; ".join(reasons),
+                    "pages_removed": list(section_removed),
+                    "pages_added": [],
+                    "content_changed": list(section_content_changed),
+                })
+            else:
+                sections_unchanged.append(section.name)
+        
+        # Check if we need new sections for added URLs
+        # Only suggest new sections if there are MANY new URLs (>30% increase)
+        new_sections = []
+        if urls_added:
+            pct_new = len(urls_added) / max(len(existing_normalized), 1) * 100
+            if pct_new > 30:
+                new_sections.append({
+                    "suggested_name": "New Pages",
+                    "pages": list(urls_added)[:10],
+                    "reason": f"{len(urls_added)} new URLs ({pct_new:.0f}% increase)",
+                })
+                logger.info(f"Significant URL additions detected: {len(urls_added)} new URLs ({pct_new:.0f}%)")
+        
+        # Determine if overview needs updating
+        overview_changed = False
+        overview_reason = "No significant changes detected"
+        
+        if len(urls_removed) > len(existing_normalized) * 0.5:
+            # More than 50% of URLs removed - major structural change
+            overview_changed = True
+            overview_reason = f"Major restructure: {len(urls_removed)} URLs removed"
+        elif len(content_changed_urls) > len(existing_normalized) * 0.5:
+            # More than 50% of pages have content changes - major content update
+            overview_changed = True
+            overview_reason = f"Major content update: {len(content_changed_urls)} pages changed"
+        
+        any_changes = (
+            overview_changed or 
+            len(sections_to_regenerate) > 0 or 
+            len(new_sections) > 0 or
+            len(content_changed_urls) > 0
+        )
+        
+        if not any_changes:
+            summary = f"No changes: all {len(existing_normalized)} URLs present with same content"
+        else:
+            parts = []
+            if urls_removed:
+                parts.append(f"{len(urls_removed)} removed")
+            if urls_added:
+                parts.append(f"{len(urls_added)} added")
+            if content_changed_urls:
+                parts.append(f"{len(content_changed_urls)} content changed")
+            summary = f"Changes: {', '.join(parts)}"
+        
+        logger.info(
+            f"Section significance for {site_url}: "
+            f"any_changes={any_changes}, "
+            f"overview_changed={overview_changed}, "
+            f"sections_to_regenerate={[s['name'] for s in sections_to_regenerate]}, "
+            f"sections_unchanged={sections_unchanged}, "
+            f"content_changed={len(content_changed_urls)}"
+        )
+        
+        return {
+            "any_changes": any_changes,
+            "overview_changed": overview_changed,
+            "overview_reason": overview_reason,
+            "sections_to_regenerate": sections_to_regenerate,
+            "sections_unchanged": sections_unchanged,
+            "new_sections": new_sections,
+            "content_changed_urls": content_changed_urls,
+            "summary": summary,
+            "parsed_existing": parsed,
+        }
+    
+    def regenerate_section(
+        self,
+        section_name: str,
+        pages: list[dict[str, Any]],
+        site_context: str,
+    ) -> dict[str, Any]:
+        """Regenerate a single section's content.
+        
+        Args:
+            section_name: Name of the section to regenerate
+            pages: List of pages belonging to this section
+            site_context: Brief context about the site
+            
+        Returns:
+            Dict with section description and formatted links
+        """
+        prompt = SECTION_REGENERATION_PROMPT.format(
+            section_name=section_name,
+            site_context=site_context,
+            pages=json.dumps([
+                {"title": p.get("title", ""), "url": p.get("url", ""), "description": p.get("description", "")}
+                for p in pages
+            ], indent=2),
         )
         
         prompt_hash = hashlib.md5(prompt.encode()).hexdigest()[:8]
-        logger.info(f"Change significance prompt hash: {prompt_hash}")
+        logger.info(f"Section regeneration prompt hash: {prompt_hash} for section '{section_name}'")
         
         response = self._call_llm(prompt)
         
-        # Parse JSON response
         try:
-            # Clean up response - remove markdown code blocks if present
             clean_response = response.strip()
             if clean_response.startswith("```"):
                 lines = clean_response.split("\n")
                 clean_response = "\n".join(lines[1:-1])
             
             result = json.loads(clean_response)
-            
-            score = int(result.get("score", 0))
-            reason = result.get("reason", "No reason provided")
-            
-            logger.info(f"Change significance: score={score}, reason={reason}")
-            
             return {
-                "score": max(0, min(100, score)),  # Clamp to 0-100
-                "reason": reason,
+                "name": section_name,
+                "description": result.get("description", ""),
+                "pages": result.get("pages", []),
             }
-            
-        except (json.JSONDecodeError, ValueError, KeyError) as e:
-            logger.warning(f"Failed to parse change significance response: {e}")
-            logger.warning(f"Raw response: {response[:200]}")
-            
-            # Default to significant if parsing fails (safer to regenerate)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Failed to parse section regeneration response: {e}")
+            # Return basic section with just the pages
             return {
-                "score": 75,
-                "reason": "Failed to parse LLM response, defaulting to significant",
+                "name": section_name,
+                "description": "",
+                "pages": [{"title": p.get("title", ""), "url": p.get("url", ""), "description": ""} for p in pages],
             }
