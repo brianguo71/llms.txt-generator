@@ -8,7 +8,7 @@ llms.txt contains AI-friendly descriptions of webpages. We need to determine if 
 ## Page URL
 {page_url}
 
-## Previous Content (truncated)
+## Previous LLMs.txt page description
 {old_content}
 
 ## New Content (truncated)
@@ -17,28 +17,13 @@ llms.txt contains AI-friendly descriptions of webpages. We need to determine if 
 ## Evaluation Criteria
 
 SIGNIFICANT changes (require description update):
-- Page title/header changed
-- Core purpose or function of the page changed
-- Major features added, removed, or substantially modified
-- Key product/service offerings changed
-- Target audience or use cases changed
-- Technical requirements or integrations changed
-- Page was restructured with different main topics
-- Major rewrites of the page (>50 words)
+ - Old content in llms.txt is not relevant to the new content
+ - Old content in llms.txt is no longer factual or accurate
+ - New content is empty or contains minimal content
 
 NOT SIGNIFICANT changes (keep existing description):
-- Minor rewrites of the page (<50 words)
-- Pricing changes
-- Typo fixes, grammar corrections, punctuation changes
-- Date or version number updates
-- Minor wording tweaks that don't change meaning
-- Formatting or layout changes
-- Added/removed testimonials or social proof
-- Updated statistics or metrics that don't change the core message
-- Copyright year updates
-- Added/removed decorative content (images, icons)
-- Navigation or footer changes
-- Minor additions that don't affect the main purpose
+ - Old content in llms.txt is still relevant and accurate to the new content
+ - New content does not change the core purpose or function of the page
 
 ## Output
 Return ONLY a JSON object:
