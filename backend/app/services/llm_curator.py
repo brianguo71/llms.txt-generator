@@ -131,10 +131,10 @@ class LLMCurator:
             
             # Prefer markdown content from Firecrawl
             markdown = page.get("markdown", "")
-            if markdown:
-                # Truncate to ~500 chars for prompt efficiency
-                preview = markdown[:500].strip()
-                if len(markdown) > 500:
+            if markdown and len(markdown.strip()) > 50:
+                # Truncate to ~2000 chars for prompt efficiency
+                preview = markdown[:2000].strip()
+                if len(markdown) > 2000:
                     preview += "..."
                 entry += f"   Content:\n{preview}\n"
             else:
@@ -145,6 +145,10 @@ class LLMCurator:
                     entry += f"   Preview: {first_para}...\n"
                 if h2s:
                     entry += f"   Sections: {', '.join(h2s)}\n"
+                
+                # Explicitly indicate empty pages to help LLM filter
+                if not first_para and not h2s and not markdown:
+                    entry += f"   Content: [EMPTY PAGE - NO CONTENT]\n"
             
             formatted.append(entry)
         
@@ -296,6 +300,26 @@ class LLMCurator:
         
         if homepage:
             logger.info(f"Homepage preserved: {homepage.get('url')}")
+        
+        # Pre-filter: remove obviously empty pages before LLM classification (saves API costs)
+        # A page is considered empty if it has < 50 chars of content
+        min_content_length = 50
+        pages_with_content = []
+        empty_pages_filtered = 0
+        for p in non_homepage_pages:
+            markdown = p.get("markdown", "") or ""
+            first_para = p.get("first_paragraph", "") or ""
+            content_length = len(markdown.strip()) + len(first_para.strip())
+            if content_length >= min_content_length:
+                pages_with_content.append(p)
+            else:
+                empty_pages_filtered += 1
+                logger.debug(f"Pre-filtered empty page: {p.get('url')} (content length: {content_length})")
+        
+        if empty_pages_filtered > 0:
+            logger.info(f"Pre-filtered {empty_pages_filtered} empty pages (< {min_content_length} chars content)")
+        
+        non_homepage_pages = pages_with_content
         
         # If only homepage exists, return it directly
         if not non_homepage_pages:

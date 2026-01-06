@@ -20,6 +20,7 @@ INCLUDE pages that:
 - Are hub/overview pages for a category (e.g., "Blog" main page, "Careers" overview)
 
 EXCLUDE pages that:
+- Are empty or contain no/minimal content
 - Are individual items in a collection (single blog post, single job listing, single product)
 - Are category, filter, tag, or search result pages
 - Are user account or authentication pages
