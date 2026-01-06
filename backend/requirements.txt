@@ -16,8 +16,8 @@ redis>=4.5.2,<5.0.0
 # Web crawling
 firecrawl-py>=1.0.0
 
-# Scrapy (alternative crawler backend)
-scrapy>=2.11.0
+# Scrapy
+scrapy>=2.11.0,<2.14.0
 scrapy-playwright>=0.0.41
 html2text>=2024.2.26
 
