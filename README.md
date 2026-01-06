@@ -143,12 +143,12 @@ The system uses a **two-tier change detection** strategy powered by Celery Beat:
 
 #### Tier 1: Lightweight Checks (Every 5 minutes by default)
 
-Fast, low-cost checks using HTTP HEAD requests across ALL crawled pages:
+Faster, cheaper checks to verify existing served links (curated sites) still exist and are still accurate.
 
-1. **Staggered scheduling**: Projects are spread evenly across the interval to avoid thundering herd
-2. **HEAD requests**: Check ETag/Last-Modified headers for changes (very cheap)
-3. **Heuristic analysis**: If headers indicate changes, fetch content and analyze significance
-4. **Fallback Strategy**: If site is headless, fetch HTML and detect change significance using semantics fingerprinting
+1. **Sample Hashing**: Served links have key content hashed (title, content, nav bar changes, desc) while ignoring noising elements (style, script, etc).
+2. **Cheaper Hash Check**: Fetch HTML for served links and compare previous content hash.
+3. **LLM Change Significance**: Call LLM (default: gpt-o4-mini) to determine if content changes are significant enough to regenerate/delete the section the link is under.
+4. **Staggered scheduling**: Projects are spread evenly across the interval to avoid thundering herd
 
 #### Tier 2: Full Rescrape (Daily by default, with backoff)
 
