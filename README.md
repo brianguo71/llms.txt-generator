@@ -150,8 +150,6 @@ Fast, low-cost checks using HTTP HEAD requests across ALL crawled pages:
 3. **Heuristic analysis**: If headers indicate changes, fetch content and analyze significance
 4. **Fallback Strategy**: If site is headless, fetch HTML and detect change significance using semantics fingerprinting
 
-This ensures that many small, incremental changes are detected as cumulative drift.
-
 #### Tier 2: Full Rescrape (Daily by default, with backoff)
 
 When lightweight checks detect significant changes, or on the configured schedule:
