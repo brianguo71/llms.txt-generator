@@ -93,12 +93,10 @@ class WebsiteSpider(scrapy.Spider):
         normalized_url = self._normalize_url(url)
         used_playwright = response.meta.get('playwright', False)
         
-        # Skip if already visited, but allow Playwright retries
-        if normalized_url in self.visited_urls and used_playwright:
-            # This is a Playwright retry for an already-visited URL - allow it
-            pass
-        elif normalized_url in self.visited_urls:
-            # Already visited and not a Playwright retry - skip
+        # Skip if already processed (extracted data from)
+        # Playwright retries are allowed since they're for the same page
+        if normalized_url in self.visited_urls and not used_playwright:
+            # Already processed this URL - skip to avoid duplicate data
             return
         
         # Check if we need Playwright (and haven't already used it)
@@ -144,8 +142,8 @@ class WebsiteSpider(scrapy.Spider):
         for link in self._extract_links(response):
             normalized_link = self._normalize_url(link)
             if normalized_link not in self.visited_urls:
-                # Mark as visited immediately to prevent duplicate requests
-                self.visited_urls.add(normalized_link)
+                # Don't mark as visited here - let parse() do it after extracting data
+                # Scrapy's built-in request fingerprinting will deduplicate
                 yield scrapy.Request(
                     url=normalized_link,  # Use normalized URL
                     callback=self.parse,

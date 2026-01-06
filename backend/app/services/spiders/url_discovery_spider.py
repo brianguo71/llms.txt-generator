@@ -103,8 +103,8 @@ class UrlDiscoverySpider(scrapy.Spider):
         for link in self._extract_links(response):
             normalized_link = self._normalize_url(link)
             if normalized_link not in self.visited_urls:
-                # Mark as visited immediately to prevent duplicate requests
-                self.visited_urls.add(normalized_link)
+                # Don't mark as visited here - let parse() do it after recording
+                # Scrapy's built-in request fingerprinting will deduplicate
                 yield scrapy.Request(
                     url=normalized_link,
                     callback=self.parse,
