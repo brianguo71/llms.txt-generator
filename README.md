@@ -82,6 +82,7 @@ npm run dev
 - API Docs: http://localhost:8000/docs
 
 ## Architecture
+<img width="810" height="539" alt="image" src="https://github.com/user-attachments/assets/985f4584-f0b5-42f1-9d17-591e8cbd1b0e" />
 
 ### Crawling Pipeline
 
