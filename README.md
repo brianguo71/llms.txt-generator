@@ -183,6 +183,53 @@ For lightweight change detection, pages are fingerprinted using semantic content
 - Popups and overlays
 ```
 
+### LLM Content Generation
+
+The system uses structured prompts to generate high-quality llms.txt content. All prompts enforce strict grounding rules to prevent hallucination.
+
+#### Prompt Pipeline
+
+| Stage | Prompt | Purpose |
+|-------|--------|---------|
+| **Filter** | `page_relevance_filter` | Batch-classify pages as relevant/irrelevant for llms.txt |
+| **Curate** | `full_site_curation` | Generate site overview, sections, and page descriptions |
+| **Categorize** | `page_categorization` | Assign new pages to existing or new sections |
+| **Regenerate** | `section_regeneration` | Update section prose when pages change |
+| **Evaluate** | `semantic_significance` | Determine if content changes warrant updates |
+
+#### Anti-Hallucination Rules
+
+All prompts enforce these constraints:
+
+- **URL Grounding**: Only use URLs from crawled pages—never invent URLs
+- **Content Grounding**: Base descriptions only on actual page content
+- **No Filler**: Avoid generic marketing phrases ("cutting-edge", "seamlessly", "revolutionary")
+- **Proportional Scaling**: Output length scales with input content depth
+- **Delete Detection**: Sections with empty/deleted pages trigger removal
+
+#### Content Scaling
+
+Output scales proportionally to source content:
+
+| Site Complexity | Overview Length | Sections | Section Prose |
+|-----------------|-----------------|----------|---------------|
+| Minimal (1-2 pages) | 25-50 words | 1-2 | 25-50 words each |
+| Simple (3-5 pages) | 50-100 words | 1-2 | 50-100 words each |
+| Medium (10-20 pages) | 150-250 words | 3-4 | 100-200 words each |
+| Complex (20+ pages) | 250-400 words | 5-7 | 150-300 words each |
+
+#### Section Structure
+
+Standard sections (used when appropriate):
+- **Platform Features** - core product/feature pages
+- **Solutions** - industry or role-specific pages  
+- **Resources** - guides, docs, learning content
+- **Integrations** - third-party connections
+- **Pricing** - plans and pricing info
+- **Company** - team, about, contact, careers
+
+Custom sections are created when content clearly warrants it.
+
 ### Change Detection
 
 The system uses a **two-tier change detection** strategy powered by Celery Beat:
