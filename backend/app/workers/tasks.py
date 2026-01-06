@@ -1057,13 +1057,24 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
                         pages=section_pages,
                         site_context=site_context,
                     )
-                    regenerated_sections.append(regen_result)
+                    
+                    if regen_result.should_delete:
+                        logger.info(f"New section '{new_section_name}' marked for deletion, skipping: {regen_result.delete_reason}")
+                        continue
+                    
+                    # Convert to dict format for consistency
+                    regen_dict = {
+                        "name": new_section_name,
+                        "description": regen_result.description,
+                        "pages": section_pages,
+                    }
+                    regenerated_sections.append(regen_dict)
                     
                     # Create new CuratedSection
                     new_section = CuratedSection(
                         project_id=project_id,
                         name=new_section_name,
-                        description=regen_result.get("description", ""),
+                        description=regen_result.description,
                         page_urls=[p.get("url") for p in section_pages],
                         content_hash="",
                     )
@@ -1083,11 +1094,7 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
                             project_id=project_id,
                             url=url,
                             title=page_data.get("title", ""),
-                            description=next(
-                                (p.get("description", "") for p in regen_result.get("pages", []) 
-                                 if p.get("url") == url),
-                                ""
-                            ),
+                            description=page_data.get("description", ""),
                             category=new_section_name,
                             content_hash=page_data.get("content_hash", ""),
                             sample_hash=page_data.get("sample_hash", ""),
