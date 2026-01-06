@@ -784,32 +784,48 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
                 new_hash = page_data.get("content_hash", "")
                 old_hash = curated_page.content_hash or ""
                 
-                if new_hash and old_hash and new_hash != old_hash:
+                # Detect changes: hash mismatch OR content was deleted (new_hash empty but old_hash exists)
+                content_deleted = not new_hash and old_hash
+                content_changed = new_hash and old_hash and new_hash != old_hash
+                
+                if content_deleted or content_changed:
                     pages_with_hash_mismatch.append({
                         "url": page_data.get("url"),
                         "old_content": curated_page.description,
                         "new_content": page_data.get("markdown", "")[:1500],
                         "page_data": page_data,
                         "curated_page": curated_page,
+                        "content_deleted": content_deleted,
                     })
             
             logger.info(f"Found {len(pages_with_hash_mismatch)} pages with content hash mismatches")
             
             # Step 6: Evaluate semantic significance of hash mismatches
             if pages_with_hash_mismatch:
-                logger.info("=== Evaluating semantic significance of content changes ===")
-                log_progress(stage="ANALYZE", current=0, total=1, elapsed=time.time() - analyze_start, 
-                           extra=f"Checking {len(pages_with_hash_mismatch)} changed pages...")
+                # Separate deleted pages (always significant) from changed pages (need LLM evaluation)
+                deleted_pages = [p for p in pages_with_hash_mismatch if p.get("content_deleted")]
+                changed_pages = [p for p in pages_with_hash_mismatch if not p.get("content_deleted")]
                 
-                semantic_result = curator.evaluate_semantic_significance(pages_with_hash_mismatch)
-                significant_urls = set(semantic_result.significant_urls)
+                # Deleted pages are always significant
+                for item in deleted_pages:
+                    pages_with_significant_changes.append(item)
+                    logger.info(f"Content deleted: {item['url']} - marking as significant")
                 
-                for item in pages_with_hash_mismatch:
-                    url = item["url"]
-                    if _normalize_url(url) in {_normalize_url(u) for u in significant_urls}:
-                        pages_with_significant_changes.append(item)
+                # Evaluate semantic significance for changed (not deleted) pages
+                if changed_pages:
+                    logger.info("=== Evaluating semantic significance of content changes ===")
+                    log_progress(stage="ANALYZE", current=0, total=1, elapsed=time.time() - analyze_start, 
+                               extra=f"Checking {len(changed_pages)} changed pages...")
+                    
+                    semantic_result = curator.evaluate_semantic_significance(changed_pages)
+                    significant_urls = set(semantic_result.significant_urls)
+                    
+                    for item in changed_pages:
+                        url = item["url"]
+                        if _normalize_url(url) in {_normalize_url(u) for u in significant_urls}:
+                            pages_with_significant_changes.append(item)
                 
-                logger.info(f"Semantic evaluation: {len(pages_with_significant_changes)}/{len(pages_with_hash_mismatch)} changes are significant")
+                logger.info(f"Semantic evaluation: {len(pages_with_significant_changes)}/{len(pages_with_hash_mismatch)} changes are significant (including {len(deleted_pages)} deleted)")
             
             # Step 7: Filter and categorize truly new URLs
             new_urls = [scraped_by_url[url] for url in truly_new_urls if url in scraped_by_url]
@@ -963,6 +979,7 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
             
             # Regenerate each changed section
             regenerated_sections = []
+            sections_to_delete = []  # Sections marked for deletion
             section_idx = 0
             
             for section_info in sections_to_regenerate:
@@ -993,13 +1010,33 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
                         pages=section_pages,
                         site_context=site_context,
                     )
-                    regenerated_sections.append(regen_result)
-                    logger.info(f"Regenerated section '{section_name}' with {len(section_pages)} pages")
+                    
+                    # Check if section should be deleted (e.g., all content deleted)
+                    if regen_result.should_delete:
+                        sections_to_delete.append({
+                            "name": section_name,
+                            "reason": regen_result.delete_reason,
+                        })
+                        logger.info(f"Section '{section_name}' marked for deletion: {regen_result.delete_reason}")
+                    else:
+                        regenerated_sections.append({
+                            "name": section_name,
+                            "description": regen_result.description,
+                            "pages": section_pages,
+                        })
+                        logger.info(f"Regenerated section '{section_name}' with {len(section_pages)} pages")
+                else:
+                    # No pages left in section - mark for deletion
+                    sections_to_delete.append({
+                        "name": section_name,
+                        "reason": "No pages remaining in section",
+                    })
+                    logger.info(f"Section '{section_name}' has no pages left, marking for deletion")
                 
                 section_idx += 1
                 log_progress(
                     stage="CURATE", current=section_idx, total=total_sections,
-                    elapsed=time.time() - curate_start, extra=f"Regenerated: {section_name}"
+                    elapsed=time.time() - curate_start, extra=f"Processed: {section_name}"
                 )
             
             # Create new sections (track inserted URLs to prevent duplicates)
@@ -1076,11 +1113,14 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
                 "new_sections": new_sections_needed,
                 "removed_urls": removed_from_site,
                 "pages_with_changes": pages_with_significant_changes,
+                "sections_to_delete": sections_to_delete,
             }
             
             logger.info(f"=== Selective curation complete in {curate_elapsed:.1f}s ===")
+            if sections_to_delete:
+                logger.info(f"Sections to delete: {[s['name'] for s in sections_to_delete]}")
             log_progress(stage="CURATE", current=total_sections, total=total_sections, elapsed=curate_elapsed, 
-                        extra=f"Regenerated {len(regenerated_sections)} sections")
+                        extra=f"Regenerated {len(regenerated_sections)}, deleting {len(sections_to_delete)} sections")
         
         else:
             # No changes - keep existing llms.txt
@@ -1172,6 +1212,26 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
                         existing_section.description = section_desc
                         existing_section.updated_at = datetime.now(timezone.utc)
                 
+                # Step 3.5: Delete sections marked for deletion
+                sections_to_delete = curation_result.get("sections_to_delete", [])
+                for del_section in sections_to_delete:
+                    section_name = del_section.get("name", "")
+                    reason = del_section.get("reason", "")
+                    
+                    # Delete the section
+                    session.query(CuratedSection).filter(
+                        CuratedSection.project_id == project_id,
+                        CuratedSection.name == section_name
+                    ).delete(synchronize_session=False)
+                    
+                    # Delete curated pages in this section
+                    session.query(CuratedPage).filter(
+                        CuratedPage.project_id == project_id,
+                        CuratedPage.category == section_name
+                    ).delete(synchronize_session=False)
+                    
+                    logger.info(f"Deleted section '{section_name}' and its pages: {reason}")
+                
                 session.commit()
                 
                 # Step 4: Reassemble llms.txt from updated database
@@ -1180,8 +1240,9 @@ def initial_crawl(self, project_id: str, crawl_job_id: str) -> dict:
                 sections_count = len(regenerated_sections) + len(unchanged_section_names)
                 content_changed = True
                 
+                deleted_count = len(sections_to_delete)
                 log_progress(stage="GENERATE", current=1, total=1, elapsed=0, 
-                           extra=f"Updated {len(regenerated_sections)} sections, removed {len(removed_urls)} pages")
+                           extra=f"Updated {len(regenerated_sections)}, deleted {deleted_count} sections, removed {len(removed_urls)} pages")
                 
             else:
                 # Full curation - save everything fresh
@@ -1517,6 +1578,7 @@ def targeted_recrawl(self, project_id: str, changed_urls: list[str]) -> dict:
                     existing.updated_at = datetime.now(timezone.utc)
 
         # Regenerate prose for affected sections
+        sections_deleted = []
         for section_name in affected_sections:
             if section_name not in sections_by_name:
                 continue
@@ -1531,6 +1593,14 @@ def targeted_recrawl(self, project_id: str, changed_urls: list[str]) -> dict:
             ).all()
             
             if not section_pages:
+                # No pages left - delete the section
+                session.query(CuratedPage).filter(
+                    CuratedPage.project_id == project_id,
+                    CuratedPage.category == section_name
+                ).delete(synchronize_session=False)
+                session.delete(section)
+                sections_deleted.append(section_name)
+                logger.info(f"Deleted section '{section_name}' - no pages remaining")
                 continue
             
             pages_for_prompt = [
@@ -1550,12 +1620,26 @@ def targeted_recrawl(self, project_id: str, changed_urls: list[str]) -> dict:
                 site_context=site_context,
             )
             
+            # Check if section should be deleted (e.g., content is empty/deleted)
+            if regeneration.should_delete:
+                session.query(CuratedPage).filter(
+                    CuratedPage.project_id == project_id,
+                    CuratedPage.category == section_name
+                ).delete(synchronize_session=False)
+                session.delete(section)
+                sections_deleted.append(section_name)
+                logger.info(f"Deleted section '{section_name}': {regeneration.delete_reason}")
+                continue
+            
             section.description = regeneration.description
             section.content_hash = _compute_section_hash(
                 [{"url": p.url, "content_hash": p.content_hash} for p in section_pages],
                 section.page_urls,
             )
             section.updated_at = datetime.now(timezone.utc)
+        
+        if sections_deleted:
+            logger.info(f"Deleted {len(sections_deleted)} sections: {sections_deleted}")
             
             logger.info(f"Regenerated section: {section_name}")
 

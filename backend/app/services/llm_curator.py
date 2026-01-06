@@ -65,6 +65,8 @@ class SectionRegenerationResult:
     """Result of regenerating a single section's prose."""
     description: str
     model_used: str
+    should_delete: bool = False
+    delete_reason: str = ""
 
 
 @dataclass
@@ -488,6 +490,7 @@ class LLMCurator:
         """Regenerate prose description for a single section.
         
         Used when pages within a section change during targeted recrawl.
+        May return should_delete=True if the section should be removed.
         """
         pages_data = self.format_pages_for_prompt(pages)
         
@@ -502,6 +505,17 @@ class LLMCurator:
         
         response = self._call_llm(prompt)
         data = self._parse_json(response)
+        
+        # Check if LLM decided to delete the section
+        action = data.get("action", "keep")
+        if action == "delete":
+            logger.info(f"Section '{section_name}' marked for deletion: {data.get('reason', 'no reason provided')}")
+            return SectionRegenerationResult(
+                description="",
+                model_used=self.settings.llm_model,
+                should_delete=True,
+                delete_reason=data.get("reason", ""),
+            )
         
         return SectionRegenerationResult(
             description=data.get("description", ""),
