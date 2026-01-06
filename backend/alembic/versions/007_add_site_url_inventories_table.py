@@ -1,6 +1,6 @@
 """Add site_url_inventories table
 
-Revision ID: ae9a209549d1
+Revision ID: 007
 Revises: 006
 Create Date: 2026-01-05 23:33:56.995469
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'ae9a209549d1'
+revision: str = '007'
 down_revision: Union[str, None] = '006'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
