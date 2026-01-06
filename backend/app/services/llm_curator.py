@@ -480,48 +480,6 @@ class LLMCurator:
         
         return "\n---\n".join(formatted)
 
-    def regenerate_section(
-        self,
-        section_name: str,
-        pages: list[dict[str, Any]],
-        site_title: str,
-        site_tagline: str,
-    ) -> SectionRegenerationResult:
-        """Regenerate prose description for a single section.
-        
-        Used when pages within a section change during targeted recrawl.
-        May return should_delete=True if the section should be removed.
-        """
-        pages_data = self.format_pages_for_prompt(pages)
-        
-        prompt = SECTION_REGENERATION_PROMPT.format(
-            section_name=section_name,
-            site_title=site_title,
-            site_tagline=site_tagline,
-            pages_data=pages_data,
-        )
-        
-        logger.info(f"Regenerating section '{section_name}' with {len(pages)} pages")
-        
-        response = self._call_llm(prompt)
-        data = self._parse_json(response)
-        
-        # Check if LLM decided to delete the section
-        action = data.get("action", "keep")
-        if action == "delete":
-            logger.info(f"Section '{section_name}' marked for deletion: {data.get('reason', 'no reason provided')}")
-            return SectionRegenerationResult(
-                description="",
-                model_used=self.settings.llm_model,
-                should_delete=True,
-                delete_reason=data.get("reason", ""),
-            )
-        
-        return SectionRegenerationResult(
-            description=data.get("description", ""),
-            model_used=self.settings.llm_model,
-        )
-
     def categorize_new_pages(
         self,
         pages: list[dict[str, Any]],
@@ -950,16 +908,16 @@ class LLMCurator:
         section_name: str,
         pages: list[dict[str, Any]],
         site_context: str,
-    ) -> dict[str, Any]:
+    ) -> SectionRegenerationResult:
         """Regenerate a single section's content.
         
         Args:
             section_name: Name of the section to regenerate
             pages: List of pages belonging to this section
-            site_context: Brief context about the site
+            site_context: Brief context about the site (e.g. "Site Title: tagline")
             
         Returns:
-            Dict with section description and formatted links
+            SectionRegenerationResult with description and should_delete flag
         """
         prompt = SECTION_REGENERATION_PROMPT.format(
             section_name=section_name,
@@ -974,24 +932,20 @@ class LLMCurator:
         logger.info(f"Section regeneration prompt hash: {prompt_hash} for section '{section_name}'")
         
         response = self._call_llm(prompt)
+        data = self._parse_json(response)
         
-        try:
-            clean_response = response.strip()
-            if clean_response.startswith("```"):
-                lines = clean_response.split("\n")
-                clean_response = "\n".join(lines[1:-1])
-            
-            result = json.loads(clean_response)
-            return {
-                "name": section_name,
-                "description": result.get("description", ""),
-                "pages": result.get("pages", []),
-            }
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.warning(f"Failed to parse section regeneration response: {e}")
-            # Return basic section with just the pages
-            return {
-                "name": section_name,
-                "description": "",
-                "pages": [{"title": p.get("title", ""), "url": p.get("url", ""), "description": ""} for p in pages],
-            }
+        # Check if LLM decided to delete the section
+        action = data.get("action", "keep")
+        if action == "delete":
+            logger.info(f"Section '{section_name}' marked for deletion: {data.get('reason', 'no reason provided')}")
+            return SectionRegenerationResult(
+                description="",
+                model_used=self.settings.llm_model,
+                should_delete=True,
+                delete_reason=data.get("reason", ""),
+            )
+        
+        return SectionRegenerationResult(
+            description=data.get("description", ""),
+            model_used=self.settings.llm_model,
+        )
