@@ -923,7 +923,12 @@ class LLMCurator:
             section_name=section_name,
             site_context=site_context,
             pages=json.dumps([
-                {"title": p.get("title", ""), "url": p.get("url", ""), "description": p.get("description", "")}
+                {
+                    "url": p.get("url", ""),
+                    "title": p.get("title", ""),
+                    "content": p.get("first_paragraph") or p.get("description") or "",
+                    "headings": p.get("h2_headings") or p.get("h2s") or [],
+                }
                 for p in pages
             ], indent=2),
         )
