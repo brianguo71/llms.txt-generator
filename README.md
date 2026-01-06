@@ -2,6 +2,11 @@
 
 Automatically generate and maintain [llms.txt](https://llmstxt.org/) files for websites. Help AI systems understand your website's structure and content.
 
+## Screenshots
+
+<img width="1440" height="776" alt="llmstxt homescreen" src="https://github.com/user-attachments/assets/40c51486-daf6-4f46-ac8c-9ac272b22a82" />
+<img width="1440" height="776" alt="llmstxt dashboard" src="https://github.com/user-attachments/assets/d671898d-8dec-449f-8e17-6f12d9a1cb75" />
+<img width="1440" height="776" alt="llmstxt project tile" src="https://github.com/user-attachments/assets/b0b0a182-2006-483c-8827-20746ed8c648" />
 
 ## Features
 
