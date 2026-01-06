@@ -11,8 +11,8 @@ interface CrawlProgressProps {
 const STEPS = [
   { key: 'CRAWL', label: 'Crawl', icon: Globe },
   { key: 'FILTER', label: 'Filter', icon: Filter },
-  { key: 'CURATE', label: 'Curate', icon: Sparkles },
-  { key: 'GENERATE', label: 'Generate', icon: FileText },
+  { key: 'CURATE', label: 'Categorize', icon: Sparkles },
+  { key: 'GENERATE', label: 'Describe', icon: FileText },
 ]
 
 export default function CrawlProgress({ jobs, projectId, projectStatus }: CrawlProgressProps) {
