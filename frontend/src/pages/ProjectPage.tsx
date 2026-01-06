@@ -127,9 +127,6 @@ export default function ProjectPage() {
                   {project.url}
                 </a>
               </div>
-              {project.pages_count !== undefined && (
-                <span>• {project.pages_count} pages</span>
-              )}
             </div>
           </div>
 
